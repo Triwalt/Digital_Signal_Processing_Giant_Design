@@ -1,0 +1,50 @@
+# MATLAB files
+*.asv
+*.mat
+*.fig
+*.slx.autosave
+*.slxc
+
+# Vivado files
+vivado_project_build/
+*.log
+*.jou
+*.str
+*.xpr
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.tmp/
+.Xil/
+
+# Simulation files
+*.wdb
+*.wcfg
+*.vcd
+*.ghw
+
+# Temporary files
+*~
+*.tmp
+*.temp
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/
+*.o
+*.exe
