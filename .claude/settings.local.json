@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Read(tree:*)",
+      "Write(tree:*)",
+      "Edit(tree:*)",
+      "MultiEdit(tree:*)",
+      "Glob(tree:*)",
+      "Grep(tree:*)",
+      "Task(tree:*)",
+      "TodoWrite(tree:*)",
+      "WebFetch(tree:*)",
+      "WebSearch(tree:*)",
+      "mcp__ide__executeCode(tree:*)",
+      "mcp__ide__getDiagnostics(tree:*)",
+      "NotebookEdit(tree:*)",
+      "ExitPlanMode(tree:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "mode": "auto",
+  "verbose": false,
+  "confirmCommands": false,
+  "autoRunSuggestibleTasks": true,
+  "autoRunBashCommands": true,
+  "autoRunPythonCode": true,
+  "autoRunMCPCommands": true,
+  "suggestibleTasks": [
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Glob",
+    "Grep",
+    "Task",
+    "TodoWrite"
+  ]
+}
