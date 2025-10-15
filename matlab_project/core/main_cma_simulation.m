@@ -11,6 +11,18 @@
 
 clear; clc; close all;
 
+% 将自建函数目录加入搜索路径
+scriptDir = fileparts(mfilename('fullpath'));
+if isempty(scriptDir)
+    scriptDir = pwd;
+end
+customFuncDir = fullfile(scriptDir, '..', 'Gemini_generated_simulation');
+if exist(customFuncDir, 'dir')
+    addpath(customFuncDir);
+else
+    warning('自建函数目录未找到: %s', customFuncDir);
+end
+
 fprintf('========================================\n');
 fprintf('4QAM通信系统CMA盲均衡仿真\n');
 fprintf('========================================\n\n');
@@ -20,33 +32,43 @@ fprintf('========================================\n\n');
 config = struct();
 
 % 基本参数
-config.numSymbols = 20000;          % 仿真符号数量
-config.snr_dB = 20;                  % 信噪比 (dB)
+config.numSymbols = 30000;          % 仿真符号数量
+config.snr_dB = 15;                  % 信噪比 (dB)
 
 % 4QAM调制参数
 config.M = 4;                        % 调制阶数
 config.grayMap = [0 1 3 2];          % 格雷码映射表 (00->0, 01->1, 11->3, 10->2)
 
 % 信道参数
-config.channelTaps = [1, 0.5, 0.2, 0.1, 0.8]; % ISI信道冲激响应
-config.channelPhaseOffsetDeg = 20;   % 额外的信道相位偏移 (单位: 度)
+config.channelTaps = [1, 0.5, 0.2, 0.1, 0.5, 0.7]; % ISI信道冲激响应
+config.channelNormalizePower = true; % 是否归一化信道能量
+config.channelPhaseOffsetDeg = 30;   % 额外的信道相位偏移 (单位: 度)
 
 % CMA均衡器参数
-config.cma.filterLength = 63;        % 均衡器长度 (M)
-config.cma.stepSize = 0.02;         % 步长 (mu) - 归一化LMS调节为更稳定的收敛速度
-config.cma.numPasses = 2;            % 遍历接收序列的次数
+config.cma.filterLength = 31;        % 均衡器长度 (M)
+config.cma.stepSize = 0.01;         % 初始步长 (mu)
+config.cma.stepDecay = 1;         % 每遍迭代的步长衰减因子
+config.cma.numPasses = 10;            % 遍历接收序列的次数
+config.cma.ddStartPass = 5;          % 从第几遍开始切换到判决引导; 0表示禁用
 config.cma.R2 = 1;                   % 4QAM的收敛半径 R^2 = 1
 
 % 快速卷积参数
-config.fft.nfft = 512;               % FFT点数
+config.conv.blockLength = 256;       % 自建快速卷积块长 (Overlap-Add方法)
 
 fprintf('配置参数:\n');
 fprintf('  符号数量: %d\n', config.numSymbols);
 fprintf('  SNR: %d dB\n', config.snr_dB);
 fprintf('  信道抽头: [%.2f, %.2f, %.2f]\n', config.channelTaps);
+fprintf('  信道归一化: %s\n', mat2str(config.channelNormalizePower));
 fprintf('  均衡器长度: %d\n', config.cma.filterLength);
 fprintf('  CMA步长: %.4f\n', config.cma.stepSize);
 fprintf('  信道相位偏移: %.2f 度\n', config.channelPhaseOffsetDeg);
+fprintf('  Fast OLA卷积块长: %d\n', config.conv.blockLength);
+if config.cma.ddStartPass > 0
+    fprintf('  判决引导模式: 第%d遍开始启用\n', config.cma.ddStartPass);
+else
+    fprintf('  判决引导模式: 禁用\n');
+end
 fprintf('\n');
 
 %% 步骤2: 发射端实现 (技术规格书 4.2节)
@@ -58,15 +80,9 @@ numBits = config.numSymbols * log2(config.M);
 txBits = randi([0 1], 1, numBits);
 fprintf('  生成 %d 个比特\n', numBits);
 
-% 2.2 比特到符号映射
-txSymbolIndices = zeros(1, config.numSymbols);
-for i = 1:config.numSymbols
-    % 每2个比特组成一个符号
-    bit1 = txBits(2*i-1);
-    bit2 = txBits(2*i);
-    decimal_idx = bit1 * 2 + bit2; % 转换为十进制索引 (0-3)
-    txSymbolIndices(i) = decimal_idx;
-end
+% 2.2 比特到符号映射 (向量化)
+bitPairs = reshape(txBits, 2, []).';      % 每行对应一个符号的两位比特
+txSymbolIndices = (bitPairs(:, 1) * 2 + bitPairs(:, 2)).';
 
 % 2.3 格雷编码映射
 grayIndices = config.grayMap(txSymbolIndices + 1); % MATLAB索引从1开始
@@ -85,9 +101,22 @@ fprintf('\n');
 
 fprintf('信道传输...\n');
 
-% 3.1 通过ISI信道
-rxSymbols_ISI = filter(config.channelTaps, 1, txSymbols);
-fprintf('  应用ISI信道\n');
+% 3.0 计算实际信道冲激响应
+channelImpulseResponse = config.channelTaps(:).';
+if config.channelNormalizePower
+    channel_rms = sqrt(sum(abs(channelImpulseResponse).^2));
+    if channel_rms > 0
+        channelImpulseResponse = channelImpulseResponse / channel_rms;
+    end
+    fprintf('  信道能量归一化系数: %.4f\n', channel_rms);
+end
+
+% 3.1 通过ISI信道 (使用自建快速卷积函数)
+blockLength = config.conv.blockLength;
+txSymbols_row = txSymbols(:).';
+rxSymbols_full = fast_conv_add(txSymbols_row, channelImpulseResponse, blockLength);
+rxSymbols_ISI = rxSymbols_full(1:length(txSymbols_row));
+fprintf('  使用fast_conv_add模拟ISI信道 (块长=%d)\n', blockLength);
 
 % 3.2 添加可配置的信道相位偏移
 phase_offset_rad_channel = config.channelPhaseOffsetDeg * pi / 180;
@@ -96,9 +125,9 @@ if abs(config.channelPhaseOffsetDeg) > 1e-6
     fprintf('  施加信道相位偏移: %.2f 度\n', config.channelPhaseOffsetDeg);
 end
 
-% 3.3 添加AWGN噪声
-rxSymbols = awgn(rxSymbols_ISI, config.snr_dB, 'measured');
-fprintf('  添加AWGN噪声 (SNR = %d dB)\n', config.snr_dB);
+% 3.3 添加AWGN噪声 (使用自建噪声发生器)
+rxSymbols = my_awgn(rxSymbols_ISI, config.snr_dB, 'measured');
+fprintf('  添加自建AWGN噪声 (SNR = %d dB)\n', config.snr_dB);
 fprintf('\n');
 
 %% 步骤4: CMA均衡器 (样本级实现)
@@ -132,7 +161,9 @@ fprintf('  遍历次数: %d\n', config.cma.numPasses);
 fprintf('  开始样本级CMA处理...\n');
 
 for pass = 1:config.cma.numPasses
-    fprintf('  Pass %d/%d 开始...\n', pass, config.cma.numPasses);
+    mu_pass = mu * (config.cma.stepDecay)^(pass-1);
+    fprintf('  Pass %d/%d 开始... (步长=%.4g)\n', pass, config.cma.numPasses, mu_pass);
+    use_decision_directed = config.cma.ddStartPass > 0 && pass >= config.cma.ddStartPass;
     for n = 1:N_total
         % 获取输入向量 (最新样本在前)
         idx = n + M - 1;
@@ -145,8 +176,14 @@ for pass = 1:config.cma.numPasses
         % CMA权重更新 (Godard算法, 归一化LMS形式)
         % 避免权重发散,使用归一化
         x_power = real(x_vec' * x_vec) + 1e-6;  % 输入功率 + 小常数避免除零
-        mu_norm = mu / x_power;
-        error_signal = (R2 - abs(y_out)^2) * conj(y_out);  % 复数误差信号
+        mu_norm = mu_pass / x_power;
+        if use_decision_directed
+            [~, dec_idx_current] = min(abs(y_out - constellation_map));
+            decision_symbol = constellation_map(dec_idx_current);
+            error_signal = conj(decision_symbol - y_out);
+        else
+            error_signal = (R2 - abs(y_out)^2) * conj(y_out);  % 复数误差信号
+        end
         w = w + mu_norm * error_signal * x_vec;
         
         % 权重剪裁以防止发散
@@ -173,17 +210,17 @@ fprintf('相位校正与解调...\n');
 % 5.1 去除瞬态样本
 transient_samples = 1000;
 equalizedSymbols_steady = equalizedSymbols(transient_samples+1:end);
+equalizedSymbols_steady = equalizedSymbols_steady(:);
 
 % 5.2 简单相位校正 - 使用前导符号估计相位偏移
 pilot_length = min(500, length(equalizedSymbols_steady));
 pilot_symbols = equalizedSymbols_steady(1:pilot_length);
+pilot_symbols = pilot_symbols(:);
 
-% 硬判决得到最近星座点
-pilot_reference = zeros(size(pilot_symbols));
-for k = 1:length(pilot_symbols)
-    [~, idx] = min(abs(pilot_symbols(k) - constellation_map));
-    pilot_reference(k) = constellation_map(idx);
-end
+% 硬判决得到最近星座点 (向量化)
+[~, pilot_indices] = min(abs(bsxfun(@minus, pilot_symbols, constellation_map)), [], 2);
+pilot_reference = constellation_map(pilot_indices);
+pilot_reference = pilot_reference(:);
 
 % 估计相位旋转
 sum_val = sum(pilot_reference .* conj(pilot_symbols));
@@ -192,33 +229,24 @@ fprintf('  估计相位偏移: %.2f 度\n', phase_offset * 180 / pi);
 
 % 应用相位校正
 equalizedSymbols_corrected = equalizedSymbols_steady * exp(1j * phase_offset);
+equalizedSymbols_corrected = equalizedSymbols_corrected(:);
 
-% 5.3 硬判决解调
-rxSymbolIndices = zeros(length(equalizedSymbols_corrected), 1);
-for k = 1:length(equalizedSymbols_corrected)
-    [~, rxSymbolIndices(k)] = min(abs(equalizedSymbols_corrected(k) - constellation_map));
-end
+% 5.3 硬判决解调 (向量化)
+[~, rxSymbolIndices] = min(abs(bsxfun(@minus, equalizedSymbols_corrected, constellation_map)), [], 2);
 
 % rxSymbolIndices现在是1-4,对应格雷码索引0-3
 rxGrayIndices = rxSymbolIndices - 1; % 格雷码索引 0-3
 
-% 5.4 格雷码反向映射
-% 找到格雷码在grayMap中的位置,该位置就是原始比特索引
-rxSymbolIndices_original = zeros(size(rxGrayIndices));
-for k = 1:length(rxGrayIndices)
-    pos = find(config.grayMap == rxGrayIndices(k));
-    if ~isempty(pos)
-        rxSymbolIndices_original(k) = pos - 1; % 转换为0-3
-    end
-end
+% 5.4 格雷码反向映射 (预计算逆映射)
+grayInverse = zeros(size(config.grayMap));
+grayInverse(config.grayMap + 1) = 0:config.M-1;
+rxSymbolIndices_original = grayInverse(rxGrayIndices + 1);
 
 % 5.5 符号到比特
-rxBits = zeros(1, length(rxSymbolIndices_original) * 2);
-for i = 1:length(rxSymbolIndices_original)
-    idx = rxSymbolIndices_original(i);
-    rxBits(2*i-1) = bitshift(idx, -1); % 高位
-    rxBits(2*i) = bitand(idx, 1);       % 低位
-end
+rxBitPairs = zeros(length(rxSymbolIndices_original), 2);
+rxBitPairs(:, 1) = bitshift(rxSymbolIndices_original, -1);
+rxBitPairs(:, 2) = bitand(rxSymbolIndices_original, 1);
+rxBits = reshape(rxBitPairs.', 1, []);
 
 fprintf('  解调完成\n');
 fprintf('\n');
@@ -277,24 +305,62 @@ fprintf('  比特错误数: %d\n', bit_errors);
 fprintf('  误码率 (BER): %.4e\n', ber);
 
 % 6.3 计算EVM
-% 获取对应的发射符号 (延迟以符号计)
-tx_symbol_delay = floor(best_delay / 2);  % 比特延迟转换为符号延迟
-tx_symbol_start = tx_symbol_delay + 1;
-tx_symbol_end = tx_symbol_start + length(equalizedSymbols_corrected) - 1;
-if tx_symbol_end > length(txSymbols)
-    tx_symbol_end = length(txSymbols);
-    equalizedSymbols_corrected = equalizedSymbols_corrected(1:(tx_symbol_end - tx_symbol_start + 1));
+% 获取对应的发射符号 (延迟以符号计)，并在邻域内搜索最优对齐以最小化EVM
+base_symbol_delay = floor(best_delay / 2);
+search_radius = 40;  % 可调邻域范围
+candidate_offsets = base_symbol_delay + (-search_radius:search_radius);
+
+evm_best = inf;
+alpha_best = 1;
+tx_symbol_delay = base_symbol_delay;
+txSymbols_ref_best = [];
+eqSymbols_ref_best = [];
+
+eqSymbols_eval = equalizedSymbols_corrected(:);
+total_tx_symbols = length(txSymbols);
+
+for offset = candidate_offsets
+    if offset < 0 || offset >= total_tx_symbols
+        continue;
+    end
+    tx_symbol_start = offset + 1;
+    remaining_tx = total_tx_symbols - offset;
+    segment_length = min(length(eqSymbols_eval), remaining_tx);
+    if segment_length < 1000  % 保证统计意义
+        continue;
+    end
+    eq_segment = eqSymbols_eval(1:segment_length);
+    tx_segment = txSymbols(tx_symbol_start:tx_symbol_start + segment_length - 1);
+
+    alpha_candidate = (eq_segment' * tx_segment(:)) / (eq_segment' * eq_segment);
+    error_vec = alpha_candidate * eq_segment - tx_segment(:);
+    evm_candidate = sqrt(mean(abs(error_vec).^2)) / sqrt(mean(abs(tx_segment).^2)) * 100;
+
+    if evm_candidate < evm_best
+        evm_best = evm_candidate;
+        alpha_best = alpha_candidate;
+        tx_symbol_delay = offset;
+        txSymbols_ref_best = tx_segment(:);
+        eqSymbols_ref_best = eq_segment;
+    end
 end
-txSymbols_ref = txSymbols(tx_symbol_start:tx_symbol_end);
 
-% 幅度校正
-alpha = (equalizedSymbols_corrected' * txSymbols_ref(:)) / ...
-        (equalizedSymbols_corrected' * equalizedSymbols_corrected);
-equalizedSymbols_aligned = alpha * equalizedSymbols_corrected;
+if isempty(txSymbols_ref_best)
+    warning('EVM计算时未找到有效对齐，使用基础延迟。');
+    tx_symbol_delay = base_symbol_delay;
+    tx_symbol_start = tx_symbol_delay + 1;
+    tx_symbol_end = min(tx_symbol_start + length(eqSymbols_eval) - 1, total_tx_symbols);
+    segment_length = tx_symbol_end - tx_symbol_start + 1;
+    txSymbols_ref_best = txSymbols(tx_symbol_start:tx_symbol_end);
+    eqSymbols_ref_best = eqSymbols_eval(1:segment_length);
+    alpha_best = (eqSymbols_ref_best' * txSymbols_ref_best(:)) / (eqSymbols_ref_best' * eqSymbols_ref_best);
+    evm_best = sqrt(mean(abs(alpha_best * eqSymbols_ref_best - txSymbols_ref_best(:)).^2)) / ...
+              sqrt(mean(abs(txSymbols_ref_best).^2)) * 100;
+end
 
-% 计算EVM
-error_vector = equalizedSymbols_aligned - txSymbols_ref(:);
-evm = sqrt(mean(abs(error_vector).^2)) / sqrt(mean(abs(txSymbols_ref).^2)) * 100;
+equalizedSymbols_aligned = alpha_best * eqSymbols_ref_best;
+evm = evm_best;
+fprintf('  EVM最优对齐符号延迟: %d\n', tx_symbol_delay);
 
 fprintf('  EVM: %.2f%%\n', evm);
 fprintf('\n');
@@ -317,8 +383,7 @@ figure('Position', [100, 100, 1600, 450]);
 % 选择用于绘图的样本数量
 num_plot_samples = min(3000, length(txSymbols));
 
-% 计算延迟 - 用于对齐发射符号和接收/均衡/校正后的符号
-tx_symbol_delay = floor(best_delay / 2);
+% 使用EVM搜索得到的最佳符号延迟对齐各阶段星座
 
 % 1. 接收信号星座图 (颜色=发射符号，位置=接收信号实际值)
 subplot(1, 3, 1);

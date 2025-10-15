@@ -72,6 +72,9 @@ function y = fast_conv_add(x, h, L)
         
         % Compute the inverse FFT to get the block convolution result.
         block_y = my_ifft(Block_Y);
+        if size(block_y, 1) > 1
+            block_y = block_y.';
+        end
         
         % Perform the Overlap-Add operation.
         y_start = (i-1)*L + 1;
