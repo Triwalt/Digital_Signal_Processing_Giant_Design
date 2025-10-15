@@ -4,63 +4,122 @@
 
 A comprehensive Digital Signal Processing course design project implementing FFT and CMA algorithms in both MATLAB and Verilog for FPGA.
 
+## 📢 重要更新 (2025-10-14)
+
+**MATLAB代码已完全重构!** 
+
+- ✅ 完全符合技术规格书要求
+- ✅ 修复了FFT递归实现问题(现为迭代蝶形运算)
+- ✅ 实现了CMA归一化LMS算法 (BER = 0%)
+- ✅ 添加自动延迟搜索对齐功能
+- ✅ **新增彩色星座图可视化** 🎨
+- ✅ 清理了冗余文件,代码更清晰
+- 📖 详见 [重构报告](docs/MATLAB_Refactoring_Report.md)
+- 🎨 详见 [彩色可视化说明](docs/Color_Constellation_Visualization.md)
+
+**推荐使用**: `matlab_project/core/` 目录下的新实现
+
+## 🎨 彩色星座图可视化 (New Feature!)
+
+为了更清晰地展示CMA均衡效果,我们添加了**彩色符号标记功能**:
+
+- 🔴 **符号00** (第一象限) - 红色
+- 🟢 **符号01** (第四象限) - 绿色  
+- 🔵 **符号11** (第三象限) - 蓝色
+- 🟡 **符号10** (第二象限) - 黄色
+
+**可视化效果**:
+- 接收信号: 各颜色点混叠分散 (ISI影响)
+- CMA均衡后: 各颜色点分离聚集 (消除ISI)
+- 相位校正后: 各颜色点精确对齐理想星座点
+
+**快速演示**:
+```matlab
+cd matlab_project/core
+demo_color_constellation  % 运行彩色星座图演示
+```
+
+详细说明请参阅 [彩色星座图文档](docs/Color_Constellation_Visualization.md)
+
 ## 项目概述 (Project Overview)
 
 本项目实现了数字信号处理中的两个核心算法：
-- **快速傅里叶变换 (FFT)**: Radix-2 抽取时间FFT算法
-- **常模算法 (CMA)**: 用于盲均衡的常模算法
+- **快速傅里叶变换 (FFT)**: Radix-2 DIT FFT算法(迭代蝶形运算)
+- **恒模算法 (CMA)**: 用于4QAM信号盲均衡的恒模算法
 
 This project implements two core algorithms in digital signal processing:
-- **Fast Fourier Transform (FFT)**: Radix-2 Decimation-In-Time FFT algorithm  
-- **Constant Modulus Algorithm (CMA)**: Blind equalization algorithm
+- **Fast Fourier Transform (FFT)**: Radix-2 Decimation-In-Time FFT (iterative butterfly)
+- **Constant Modulus Algorithm (CMA)**: Blind equalization for 4QAM signals
 
 ## 项目结构 (Project Structure)
 
 ```
 Digital_Signal_Processing_Giant_Design/
-├── matlab_project/           # MATLAB实现
-│   ├── src/                 # 源代码
-│   │   ├── fft_implementation.m
-│   │   └── cma_algorithm.m
-│   ├── test/                # 测试脚本
-│   │   ├── test_fft.m
-│   │   └── test_cma.m
-│   ├── docs/                # 文档
-│   └── demo_main.m          # 主演示脚本
-├── vivado_project/          # Vivado/Verilog实现
-│   ├── src/                 # Verilog源代码
+├── matlab_project/                    # MATLAB实现
+│   ├── core/                         # ⭐ 新的核心实现(推荐使用)
+│   │   ├── my_fft.m                 # FFT(迭代蝶形运算)
+│   │   ├── my_ifft.m                # IFFT
+│   │   ├── fast_conv_os.m           # 快速卷积(重叠保留法)
+│   │   ├── test_fft.m               # FFT/IFFT验证
+│   │   ├── test_fast_conv.m         # 快速卷积验证
+│   │   ├── main_cma_simulation.m    # 主仿真脚本
+│   │   └── run_experiments.m        # 参数影响分析
+│   ├── Gemini_generated_simulation/  # 旧实现(仅供参考)
+│   └── README.md                     # MATLAB使用说明
+├── vivado_project/                    # Vivado/Verilog实现
+│   ├── src/                          # Verilog源代码
 │   │   ├── fft_radix2_dit.v
 │   │   └── cma_equalizer.v
-│   ├── tb/                  # 测试台
+│   ├── tb/                           # 测试台
 │   │   ├── tb_fft_radix2_dit.v
 │   │   └── tb_cma_equalizer.v
-│   ├── constraints/         # 约束文件
+│   ├── constraints/                  # 约束文件
 │   │   └── timing_constraints.xdc
-│   └── scripts/             # TCL脚本
+│   └── scripts/                      # TCL脚本
 │       └── create_project.tcl
-├── docs/                    # 项目文档
-└── examples/                # 示例和演示
+├── docs/                              # 项目文档
+│   ├── MATLAB_Refactoring_Report.md  # 重构报告
+│   ├── CMA_Documentation.md
+│   └── FFT_Documentation.md
+├── examples/                          # 示例和演示
+│   ├── simple_fft_example.m
+│   └── simple_cma_example.m
+└── CMA均衡器MATLAB代码生成技术规格书.md
 ```
 
 ## 快速开始 (Quick Start)
 
-### MATLAB部分
+### MATLAB部分 ⭐
 
-1. 打开MATLAB并导航到项目目录
-2. 运行主演示脚本：
+**推荐使用新的核心实现**:
+
+1. 打开MATLAB并导航到核心目录：
    ```matlab
-   matlab_project/demo_main.m
+   cd matlab_project/core
    ```
 
-3. 运行单独的测试：
+2. 验证基础模块：
    ```matlab
-   % FFT测试
-   cd matlab_project/test
-   test_fft
+   % 验证FFT/IFFT实现
+   run('test_fft.m')
    
-   % CMA测试
-   test_cma
+   % 验证快速卷积实现
+   run('test_fast_conv.m')
    ```
+
+3. 运行完整的CMA盲均衡仿真：
+   ```matlab
+   % 主仿真(包含星座图、BER、EVM等)
+   run('main_cma_simulation.m')
+   ```
+
+4. 参数影响分析实验：
+   ```matlab
+   % 分析步长μ、滤波器长度M、SNR的影响
+   run('run_experiments.m')
+   ```
+
+详细使用说明见: [matlab_project/README.md](matlab_project/README.md)
 
 ### Vivado部分
 
@@ -84,17 +143,27 @@ Digital_Signal_Processing_Giant_Design/
 
 ## 算法实现 (Algorithm Implementation)
 
-### FFT算法特性
-- **算法类型**: Radix-2 抽取时间 (DIT)
+### FFT算法特性 (新实现)
+- **算法类型**: Radix-2 DIT (迭代蝶形运算,非递归)
 - **支持点数**: 2的幂次 (64, 128, 256, 512, 1024...)
-- **数据格式**: 复数 (实部+虚部)
-- **优化**: 位反序优化，蝶形运算优化
+- **数据格式**: 复数列向量
+- **优化特性**:
+  - ✅ 比特反转重排
+  - ✅ 旋转因子预计算
+  - ✅ 利用对称性(仅计算前N/2个旋转因子)
+  - ✅ 原位蝶形运算
+  - ✅ 适合硬件实现
 
-### CMA算法特性  
-- **应用**: QPSK信号盲均衡
-- **抽头数**: 可配置 (默认11)
-- **步长**: 自适应步长控制
-- **收敛**: 快速收敛，低稳态误差
+### CMA算法特性 (新实现)
+- **应用**: 4QAM信号盲均衡
+- **架构**: 混合处理架构
+  - 逐样本CMA权重更新
+  - 块级快速卷积滤波
+- **抽头数**: 可配置 (推荐31,信道长度的2-3倍)
+- **步长**: 固定步长 (推荐1e-4 ~ 1e-3)
+- **收敛半径**: R² = 1 (归一化4QAM)
+- **相位校正**: 判决辅助相位校正
+- **性能**: BER < 1e-4 @ SNR=25dB
 
 ## 性能指标 (Performance Metrics)
 

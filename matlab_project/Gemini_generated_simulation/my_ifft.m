@@ -5,6 +5,11 @@ function y = my_ifft(X)
 % This is an efficient way to implement IFFT when an FFT function is available.
 
     N = length(X);
+
+    % Enforce power-of-two length to avoid unintended padding inside my_fft
+    if N ~= 2^nextpow2(N)
+        error('my_ifft: input length must be a power of 2. Got N = %d.', N);
+    end
     
     % Step 1: Compute the complex conjugate of the input sequence.
     conj_X = conj(X);

@@ -7,7 +7,7 @@
 clear; clc; close all;
 
 % Add path to source functions
-addpath('../matlab_project/src');
+addpath('../matlab_project/Gemini_generated_simulation');
 
 fprintf('=== Simple FFT Example ===\n');
 
@@ -22,7 +22,7 @@ signal = cos(2*pi*f_signal*t) + 0.3*randn(size(t));
 
 % Compute FFT
 fprintf('Computing FFT of %d-point signal...\n', N);
-X = fft_implementation(signal);
+X = my_fft(signal);
 
 % Frequency vector
 f = (0:N-1)*fs/N;

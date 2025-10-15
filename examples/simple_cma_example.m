@@ -7,7 +7,7 @@
 clear; clc; close all;
 
 % Add path to source functions
-addpath('../matlab_project/src');
+addpath('../matlab_project/Gemini_generated_simulation');
 
 fprintf('=== Simple CMA Example ===\n');
 
