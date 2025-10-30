@@ -1,107 +1,111 @@
 function X = my_fft(x)
 % my_fft: 实现基于迭代蝶形运算的基2-FFT算法 (按时间抽取 DIT)
 %
-% 算法特点:
-% 1. 迭代实现(非递归),适合硬件实现
-% 2. 比特反转重排输入
-% 3. 旋转因子预计算并利用对称性优化
-% 4. 原位蝶形运算
+% 优化要点:
+% 1. 迭代实现, 适合硬件映射
+% 2. 缓存比特反转索引与旋转因子, 避免重复计算
+% 3. 利用向量化蝶形运算, 减少MATLAB循环开销
 %
 % 输入:
-%   x - 复数列向量,长度N必须是2的整数次幂
+%   x - 复数列向量, 长度N必须是2的整数次幂
 %
 % 输出:
-%   X - x的N点DFT结果,复数列向量
-%
-% 参考: 技术规格书第2.1节
+%   X - x的N点DFT结果, 复数列向量
 
     % 确保输入为列向量
     if size(x, 2) > 1
         x = x(:);
     end
-    
+
     N = length(x);
-    
+
     % 验证N是2的幂
     if N == 0 || mod(log2(N), 1) ~= 0
         error('输入长度必须是2的整数次幂');
     end
-    
-    % 计算级数
-    num_stages = log2(N);
-    
+
+    % 获取/更新缓存
+    cache = get_fft_cache(N);
+
     % 步骤1: 比特反转重排
-    X = bit_reverse(x, N);
-    
-    % 步骤2: 预计算旋转因子 (利用对称性,仅计算前N/2个)
-    % W_N^k = exp(-j*2*pi*k/N), k = 0, 1, ..., N/2-1
-    twiddle_factors = exp(-1j * 2 * pi * (0:N/2-1) / N);
-    
-    % 步骤3: 迭代蝶形运算 (log2(N)级)
-    for stage = 1:num_stages
-        % 当前级的参数
-        butterfly_span = 2^stage;          % 蝶形运算跨度
-        num_butterflies = N / butterfly_span; % 每组蝶形数量
-        half_span = butterfly_span / 2;    % 半跨度
-        
-        % 对每一组进行蝶形运算
-        for group = 0:(num_butterflies - 1)
-            % 组的起始索引
-            group_start = group * butterfly_span + 1;
-            
-            % 对组内每个蝶形单元进行计算
-            for butterfly = 0:(half_span - 1)
-                % 计算蝶形的上下节点索引
-                idx_top = group_start + butterfly;
-                idx_bot = idx_top + half_span;
-                
-                % 计算旋转因子索引 (利用对称性和周期性)
-                % 旋转因子为 W_N^(butterfly * N / butterfly_span)
-                twiddle_idx = mod(butterfly * N / butterfly_span, N);
-                
-                % 利用对称性获取旋转因子
-                if twiddle_idx < N/2
-                    W = twiddle_factors(twiddle_idx + 1);
-                else
-                    % W_N^(k+N/2) = -W_N^k
-                    W = -twiddle_factors(twiddle_idx - N/2 + 1);
-                end
-                
-                % 蝶形运算
-                temp = X(idx_top);
-                X(idx_top) = temp + W * X(idx_bot);
-                X(idx_bot) = temp - W * X(idx_bot);
-            end
-        end
+    X = x(cache.bitrev_idx);
+
+    % 步骤2: 迭代蝶形运算
+    for stage = 1:cache.num_stages
+        span = cache.stage_span(stage);
+        half_span = span / 2;
+        W = cache.stage_twiddles{stage};
+
+        X = reshape(X, span, []);
+
+        top_val = X(1:half_span, :);
+        bot_val = X(half_span + 1:end, :);
+
+        twiddle_mul = W .* bot_val;
+        X(1:half_span, :) = top_val + twiddle_mul;
+        X(half_span + 1:end, :) = top_val - twiddle_mul;
+
+        X = X(:);
     end
 end
 
 
-function y = bit_reverse(x, N)
-% bit_reverse: 对输入向量按照比特反转顺序重新排列
-%
-% 输入:
-%   x - 输入向量
-%   N - 向量长度 (必须是2的幂)
-%
-% 输出:
-%   y - 比特反转后的向量
+function cache = get_fft_cache(N)
+% get_fft_cache: 返回给定N的FFT缓存(比特反转索引和旋转因子)
+
+    persistent cached_N cached_data
+
+    if isempty(cached_N)
+        cached_N = [];
+        cached_data = {};
+    end
+
+    idx = find(cached_N == N, 1);
+    if isempty(idx)
+        num_stages = log2(N);
+
+        bitrev_idx = compute_bitrev_indices(N);
+        twiddle_full = exp(-1j * 2 * pi * (0:(N/2 - 1)) / N).';
+
+        stage_span = zeros(num_stages, 1);
+        stage_twiddles = cell(num_stages, 1);
+
+        for stage = 1:num_stages
+            span = 2^stage;
+            half_span = span / 2;
+            stride = N / span;
+            idx_vec = (0:half_span-1) * stride + 1;
+            stage_span(stage) = span;
+            stage_twiddles{stage} = twiddle_full(idx_vec);
+        end
+
+        cache = struct( ...
+            'N', N, ...
+            'num_stages', num_stages, ...
+            'bitrev_idx', bitrev_idx, ...
+            'stage_span', stage_span, ...
+            'stage_twiddles', {stage_twiddles} ...
+        );
+
+        cached_N(end + 1) = N;
+        cached_data{end + 1} = cache;
+    else
+        cache = cached_data{idx};
+    end
+end
+
+
+function idx = compute_bitrev_indices(N)
+% compute_bitrev_indices: 生成长度为N的比特反转索引
 
     num_bits = log2(N);
-    y = zeros(size(x));
-    
-    for i = 0:(N-1)
-        % 计算i的比特反转索引
-        reversed_idx = 0;
-        temp = i;
-        
-        for bit = 0:(num_bits-1)
-            reversed_idx = bitshift(reversed_idx, 1);
-            reversed_idx = reversed_idx + mod(temp, 2);
-            temp = bitshift(temp, -1);
-        end
-        
-        % 重新排列 (MATLAB索引从1开始)
-        y(reversed_idx + 1) = x(i + 1);
+    values = (0:N-1).';
+    reversed = zeros(N, 1);
+
+    for bit = 1:num_bits
+        reversed = bitshift(reversed, 1) + bitand(values, 1);
+        values = bitshift(values, -1);
     end
+
+    idx = reversed + 1;
 end
