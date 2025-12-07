@@ -1,11 +1,52 @@
-%% main_cma_TRdata.m: 使用时域 2x2 CMA 对 TD_TRdata.mat 进行均衡处理
-%  - 从 homework1/TD_TRdata.mat 读取 RTdataX / RTdataY
-%  - 使用与 CMA_reference.m 一致的 2x2 时域 CMA 结构
-%  - 输出均衡前/后的星座图，便于观察收敛效果
+%% main_cma_TRdata.m: TD_TRdata.mat 双极化数据均衡处理入口
+%
+% 功能说明:
+%   对 homework1/TD_TRdata.mat 中的双极化信号 (RTdataX, RTdataY) 进行
+%   2x2 MIMO CMA 盲均衡处理，支持时域和频域两种实现方式。
+%
+% 配置开关:
+%   cma_use_freq_domain  - true:  调用 homework1/CMA_homework.m (频域CMA，使用自编FFT)
+%                        - false: 使用本文件内的时域CMA实现 (与CMA_reference.m一致)
+%   enable_vv_phase_lock - true:  启用V&V相位恢复算法
+%                        - false: 跳过相位恢复
+%   enable_plot_output   - true:  输出相位漂移估计图
+%                        - false: 不输出相位漂移估计图
+%
+% 输出:
+%   - 均衡前星座图 (X/Y极化)
+%   - 均衡后星座图 (含相位恢复)
+%   - 相位漂移估计曲线
+%   - 末段稳定数据星座图
+%
+% 相关文件:
+%   - homework1/CMA_homework.m   : 频域CMA实现 (使用 core/my_fft.m)
+%   - homework1/CMA_reference.m  : 时域CMA参考实现
+%   - homework1/TD_TRdata.mat    : 双极化实验数据
 
 clc;
 clear;
 close all;
+
+%% ==================== 配置开关 ====================
+cma_use_freq_domain  = false;   % true: 频域CMA (自编FFT), false: 时域CMA
+enable_vv_phase_lock = true;    % true: 启用V&V相位恢复
+enable_plot_output   = true;    % true: 启用图形输出
+%% =================================================
+if cma_use_freq_domain
+    scriptDir = fileparts(mfilename('fullpath'));
+    if isempty(scriptDir)
+        scriptDir = pwd;
+    end
+    projectRoot = fileparts(scriptDir);
+    hwDir = fullfile(projectRoot, 'homework1');
+    if ~exist(hwDir, 'dir')
+        error('homework1 目录不存在: %s', hwDir);
+    end
+    addpath(hwDir);
+    % 配置开关传递给CMA_homework.m (变量在workspace中预设)
+    run(fullfile(hwDir, 'CMA_homework.m'));
+    return;
+end
 
 %% 路径与数据加载
 scriptDir = fileparts(mfilename('fullpath'));
@@ -168,10 +209,12 @@ fX = conv(zX, win, 'same');
 fY = conv(zY, win, 'same');
 thetaX = angle(fX) / 4;
 thetaY = angle(fY) / 4;
-yX_corr = yX .* exp(-1j * thetaX);
-yY_corr = yY .* exp(-1j * thetaY);
-CMAdataX = yX_corr.';
-CMAdataY = yY_corr.';
+if enable_vv_phase_lock
+    yX_corr = yX .* exp(-1j * thetaX);
+    yY_corr = yY .* exp(-1j * thetaY);
+    CMAdataX = yX_corr.';
+    CMAdataY = yY_corr.';
+end
 
 final_xx = xx(:, clk_num);
 final_yy = yy(:, clk_num);
@@ -194,7 +237,21 @@ plot(CMAdataY, '.b');
 title('Y-pol after CMA'); grid on; axis equal;
 xlim([-2 2]); ylim([-2 2]);
 
-%% 仅观察末尾一段稳定部分
+%% 相位漂移估计图 (由 enable_plot_output 控制)
+if enable_plot_output
+    figure();
+    subplot(2, 1, 1);
+    plot(-499:0, unwrap(thetaX(end-499:end)));  % Show last 500 points
+    xlabel('Sample Index (relative to end)');
+    title('Estimated phase drift of X-pol (last 500 samples)'); grid on;
+
+    subplot(2, 1, 2);
+    plot(-499:0, unwrap(thetaY(end-499:end)));  % Show last 500 points
+    xlabel('Sample Index (relative to end)');
+    title('Estimated phase drift of Y-pol (last 500 samples)'); grid on;
+end
+
+%% 末尾稳定部分星座图
 num_show = min(131072, length(CMAdataX) - 1);
 if num_show > 0
     CMAdataX_tail = CMAdataX(end-num_show:end);

@@ -4,15 +4,26 @@
 
 ```
 matlab_project/
-├── core/                          # 核心实现(符合技术规格书)
-│   ├── my_fft.m                  # 自定义FFT实现(迭代蝶形运算)
-│   ├── my_ifft.m                 # 自定义IFFT实现
+├── core/                          # 核心实现(符合技术规格书,推荐使用)
+│   ├── my_fft.m                  # FFT实现(迭代蝶形,2的幂次长度)
+│   ├── my_ifft.m                 # IFFT实现
+│   ├── my_awgn.m                 # AWGN噪声发生器
 │   ├── fast_conv_os.m            # 快速卷积(重叠保留法)
 │   ├── test_fft.m                # FFT/IFFT验证脚本
 │   ├── test_fast_conv.m          # 快速卷积验证脚本
 │   ├── main_cma_simulation.m     # 主仿真脚本
+│   ├── main_cma_TRdata.m         # 实验数据处理脚本
+│   ├── demo_color_constellation.m # 彩色星座图演示
 │   └── run_experiments.m         # 参数影响分析实验
-└── Gemini_generated_simulation/   # 旧版实现(已废弃)
+├── homework1/                     # 作业模板与实验数据
+│   ├── CMA_reference.m           # 时域CMA参考实现
+│   ├── CMA_homework.m            # 频域CMA作业(使用core/目录函数)
+│   └── TD_TRdata.mat             # 实验数据
+└── legacy/                        # 旧版实现(仅供参考)
+    ├── my_fft_mix.m              # 任意点数FFT(混合基算法)
+    ├── my_ifft_mix.m             # 任意点数IFFT
+    ├── fast_conv_add.m           # 重叠相加法
+    └── ...
 ```
 
 ## 快速开始
@@ -46,7 +57,7 @@ run('run_experiments.m')
 
 ## 核心模块说明
 
-### my_fft.m
+### my_fft.m (core/)
 - **算法**: 基2-FFT,按时间抽取(DIT),迭代实现
 - **特点**: 
   - 比特反转重排
@@ -54,6 +65,17 @@ run('run_experiments.m')
   - 原位蝶形运算
 - **输入**: 列向量,长度必须是2的幂
 - **输出**: DFT结果
+
+### my_fft_mix.m (legacy/)
+- **算法**: 混合基Cooley-Tukey + Bluestein
+- **特点**:
+  - 支持任意长度N(不限于2的幂)
+  - 合数N: 递归分解为 N = r × m
+  - 质数N: Bluestein算法转为卷积
+  - 小N(≤16): 直接DFT
+- **输入**: 行向量或列向量,任意长度
+- **输出**: DFT结果(保持输入方向)
+- **复杂度**: O(N log N)
 
 ### my_ifft.m
 - **算法**: 利用FFT实现IFFT: IDFT(X) = (1/N) * conj(DFT(conj(X)))

@@ -11,17 +11,12 @@
 
 clear; clc; close all;
 
-% 将自建函数目录加入搜索路径
+% 将core目录加入搜索路径 (确保使用本目录的函数)
 scriptDir = fileparts(mfilename('fullpath'));
 if isempty(scriptDir)
     scriptDir = pwd;
 end
-customFuncDir = fullfile(scriptDir, '..', 'Gemini_generated_simulation');
-if exist(customFuncDir, 'dir')
-    addpath(customFuncDir);
-else
-    warning('自建函数目录未找到: %s', customFuncDir);
-end
+addpath(scriptDir);
 
 fprintf('========================================\n');
 fprintf('4QAM通信系统CMA盲均衡仿真\n');
@@ -32,7 +27,7 @@ fprintf('========================================\n\n');
 config = struct();
 
 % 基本参数
-config.numSymbols = 30000;          % 仿真符号数量
+config.numSymbols = 300000;          % 仿真符号数量
 config.snr_dB = 15;                  % 信噪比 (dB)
 
 % 4QAM调制参数
@@ -42,7 +37,13 @@ config.grayMap = [0 1 3 2];          % 格雷码映射表 (00->0, 01->1, 11->3, 
 % 信道参数
 config.channelTaps = [1, 0.5, 0.2, 0.1, 0.5, 0.7]; % ISI信道冲激响应
 config.channelNormalizePower = true; % 是否归一化信道能量
-config.channelPhaseOffsetDeg = 30;   % 额外的信道相位偏移 (单位: 度)
+config.channelPhaseOffsetDeg = 0;   % 额外的信道相位偏移 (单位: 度)
+config.phaseNoise.enable = true;
+config.phaseNoise.sigmaDeg = 2.0;
+
+% 载波相位恢复 (V&V) 参数
+config.cpr.enableVV = false;         % 是否启用基于四次法的V&V载波相位恢复
+config.cpr.winHalf  = 3;             % V&V平滑窗口半长 (总长度=2*winHalf+1)
 
 % CMA均衡器参数
 config.cma.filterLength = 31;        % 均衡器长度 (M)
@@ -53,7 +54,7 @@ config.cma.ddStartPass = 5;          % 从第几遍开始切换到判决引导; 
 config.cma.R2 = 1;                   % 4QAM的收敛半径 R^2 = 1
 
 % 快速卷积参数
-config.conv.blockLength = 256;       % 自建快速卷积块长 (Overlap-Add方法)
+config.conv.blockLength = 256;       % 自建快速卷积块长 (Overlap-Save方法)
 
 fprintf('配置参数:\n');
 fprintf('  符号数量: %d\n', config.numSymbols);
@@ -113,10 +114,10 @@ end
 
 % 3.1 通过ISI信道 (使用自建快速卷积函数)
 blockLength = config.conv.blockLength;
-txSymbols_row = txSymbols(:).';
-rxSymbols_full = fast_conv_add(txSymbols_row, channelImpulseResponse, blockLength);
-rxSymbols_ISI = rxSymbols_full(1:length(txSymbols_row));
-fprintf('  使用fast_conv_add模拟ISI信道 (块长=%d)\n', blockLength);
+txSymbols_col = txSymbols(:);
+rxSymbols_full = fast_conv_os(txSymbols_col, channelImpulseResponse(:), blockLength);
+rxSymbols_ISI = rxSymbols_full(1:length(txSymbols_col)).';
+fprintf('  使用fast_conv_os模拟ISI信道 (块长=%d)\n', blockLength);
 
 % 3.2 添加可配置的信道相位偏移
 phase_offset_rad_channel = config.channelPhaseOffsetDeg * pi / 180;
@@ -128,6 +129,14 @@ end
 % 3.3 添加AWGN噪声 (使用自建噪声发生器)
 rxSymbols = my_awgn(rxSymbols_ISI, config.snr_dB, 'measured');
 fprintf('  添加自建AWGN噪声 (SNR = %d dB)\n', config.snr_dB);
+if isfield(config, 'phaseNoise') && isfield(config.phaseNoise, 'enable') && config.phaseNoise.enable
+    sigma_rad = config.phaseNoise.sigmaDeg * pi / 180;
+    N_phase = length(rxSymbols);
+    dphi = sigma_rad * randn(1, N_phase);
+    phi = cumsum(dphi);
+    rxSymbols = rxSymbols .* exp(1j * phi);
+    fprintf('  添加随机相位噪声: sigma(Δphi) = %.2f 度/符号\n', config.phaseNoise.sigmaDeg);
+end
 fprintf('\n');
 
 %% 步骤4: CMA均衡器 (样本级实现)
@@ -212,9 +221,23 @@ transient_samples = 1000;
 equalizedSymbols_steady = equalizedSymbols(transient_samples+1:end);
 equalizedSymbols_steady = equalizedSymbols_steady(:);
 
-% 5.2 简单相位校正 - 使用前导符号估计相位偏移
-pilot_length = min(500, length(equalizedSymbols_steady));
-pilot_symbols = equalizedSymbols_steady(1:pilot_length);
+% 5.2 载波相位恢复 (可选V&V) + 使用前导符号估计残余相位偏移
+equalizedSymbols_for_pilot = equalizedSymbols_steady;
+if isfield(config, 'cpr') && isfield(config.cpr, 'enableVV') && config.cpr.enableVV
+    y_cpr = equalizedSymbols_for_pilot(:);
+    z_cpr = y_cpr.^4;
+    win_half_cpr = max(0, round(config.cpr.winHalf));
+    if win_half_cpr > 0
+        win_cpr = ones(2*win_half_cpr+1, 1) / (2*win_half_cpr+1);
+        f_cpr = conv(z_cpr, win_cpr, 'same');
+        theta_cpr = angle(f_cpr) / 4;
+        y_cpr = y_cpr .* exp(-1j * theta_cpr);
+    end
+    equalizedSymbols_for_pilot = y_cpr;
+end
+
+pilot_length = min(500, length(equalizedSymbols_for_pilot));
+pilot_symbols = equalizedSymbols_for_pilot(1:pilot_length);
 pilot_symbols = pilot_symbols(:);
 
 % 硬判决得到最近星座点 (向量化)
@@ -228,7 +251,7 @@ phase_offset = angle(sum_val);
 fprintf('  估计相位偏移: %.2f 度\n', phase_offset * 180 / pi);
 
 % 应用相位校正
-equalizedSymbols_corrected = equalizedSymbols_steady * exp(1j * phase_offset);
+equalizedSymbols_corrected = equalizedSymbols_for_pilot * exp(1j * phase_offset);
 equalizedSymbols_corrected = equalizedSymbols_corrected(:);
 
 % 5.3 硬判决解调 (向量化)

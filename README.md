@@ -64,7 +64,9 @@ Digital_Signal_Processing_Giant_Design/
 │   │   ├── test_fast_conv.m         # 快速卷积验证
 │   │   ├── main_cma_simulation.m    # 主仿真脚本
 │   │   └── run_experiments.m        # 参数影响分析
-│   ├── Gemini_generated_simulation/  # 旧实现(仅供参考)
+│   ├── legacy/                       # 旧版实现(仅供参考)
+│   │   ├── my_fft_mix.m             # 任意点数FFT(混合基)
+│   │   └── ...
 │   └── README.md                     # MATLAB使用说明
 ├── vivado_project/                    # Vivado/Verilog实现
 │   ├── src/                          # Verilog源代码

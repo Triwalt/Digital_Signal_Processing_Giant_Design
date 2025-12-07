@@ -1,7 +1,33 @@
-%% 说明: 使用自行编写的FFT，将CMA_reference.m中的核心算法在频域下实现
-clc;
-clear;
-close all;
+%% CMA_homework.m: 使用自编FFT实现频域2x2 MIMO CMA
+%
+% 功能: 对TD_TRdata.mat中的双极化信号进行频域CMA盲均衡
+% 核心: 使用 core/my_fft.m 和 core/my_ifft.m 实现频域快速卷积
+%
+% 配置开关 (可由调用脚本预设):
+%   enable_vv_phase_lock - true: 启用V&V相位恢复 (默认false)
+%   enable_plot_output   - true: 输出相位漂移估计图 (默认true)
+%
+% 调用方式:
+%   1. 直接运行: run('CMA_homework.m')
+%   2. 从main_cma_TRdata.m调用 (可预设配置开关)
+
+st = dbstack;
+if numel(st) == 1
+    % 直接运行时的默认配置
+    clc;
+    clear;
+    close all;
+    enable_vv_phase_lock = false;
+    enable_plot_output = false;
+end
+
+% 确保配置变量存在
+if ~exist('enable_vv_phase_lock', 'var')
+    enable_vv_phase_lock = true;
+end
+if ~exist('enable_plot_output', 'var')
+    enable_plot_output = true;
+end
 
 %% 自建FFT/IFFT路径
 scriptDir = fileparts(mfilename('fullpath'));
@@ -176,6 +202,23 @@ end
 CMAdataX = SigX_out.';
 CMAdataY = SigY_out.';
 
+yX = CMAdataX(:);
+yY = CMAdataY(:);
+zX = yX.^4;
+zY = yY.^4;
+win_half = 3;
+win = ones(2*win_half+1, 1) / (2*win_half+1);
+fX = conv(zX, win, 'same');
+fY = conv(zY, win, 'same');
+thetaX = angle(fX) / 4;
+thetaY = angle(fY) / 4;
+if enable_vv_phase_lock
+    yX_corr = yX .* exp(-1j * thetaX);
+    yY_corr = yY .* exp(-1j * thetaY);
+    CMAdataX = yX_corr.';
+    CMAdataY = yY_corr.';
+end
+
 final_xx = xx(:, clk_num);
 final_yy = yy(:, clk_num);
 final_xy = xy(:, clk_num);
@@ -185,13 +228,22 @@ Tap_Matx = [[final_xx; final_xy] [final_yx; final_yy]];
 errx_reshaped = reshape(errx_vec, seg_len, seg_num);
 erry_reshaped = reshape(erry_vec, seg_len, seg_num);
 
+%% 均衡后星座图
 figure();
 subplot(121);plot(CMAdataX,'.r');title('Xpol after CMA');xlim([-2 2]);ylim([-2 2]);
 subplot(122);plot(CMAdataY,'.b');title('Ypol after CMA');xlim([-2 2]);ylim([-2 2]);
 
-CMAdataX = CMAdataX(end-131072:end);
-CMAdataY = CMAdataY(end-131072:end);
+%% 相位漂移估计图 (由 enable_plot_output 控制)
+if enable_plot_output
+    figure();
+    subplot(2,1,1);plot(unwrap(thetaX));title('Estimated phase drift of X-pol');grid on;
+    subplot(2,1,2);plot(unwrap(thetaY));title('Estimated phase drift of Y-pol');grid on;
+end
+
+%% 末尾稳定部分星座图
+CMAdataX_tail = CMAdataX(end-131072:end);
+CMAdataY_tail = CMAdataY(end-131072:end);
 
 figure();
-subplot(121);plot(CMAdataX,'.r');title('Last part of Xpol after CMA');xlim([-2 2]);ylim([-2 2]);
-subplot(122);plot(CMAdataY,'.b');title('Last part of Ypol after CMA');xlim([-2 2]);ylim([-2 2]);
+subplot(121);plot(CMAdataX_tail,'.r');title('Last part of Xpol after CMA');xlim([-2 2]);ylim([-2 2]);
+subplot(122);plot(CMAdataY_tail,'.b');title('Last part of Ypol after CMA');xlim([-2 2]);ylim([-2 2]);
