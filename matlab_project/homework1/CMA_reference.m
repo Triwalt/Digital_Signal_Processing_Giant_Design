@@ -1,7 +1,10 @@
 %% 说明: 以下代码基于时域CMA，完成数据的解调
-clc;
-clear;
-close all;
+st = dbstack;
+if numel(st) == 1
+    clc;
+    clear;
+    close all;
+end
 
 %% Load Datas 
 load TD_TRdata.mat;

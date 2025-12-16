@@ -51,34 +51,46 @@ subplot(121);plot(RTdataX,'.r');title('Xpol before CMA');xlim([-2 2]);ylim([-2 2
 subplot(122);plot(RTdataY,'.b');title('Ypol before CMA');xlim([-2 2]);ylim([-2 2]);
 
 %% CMA参数设置 (与时域版本保持一致)
-seg_len     = 32;
-tap_len     = 33;
-clk_dly     = 1;
-par_num     = 4;
-step        = 2^-8;
-Rx          = 2;
-Ry          = 2;
+seg_len     = 32;   % 每段处理样本数
+tap_len     = 33;   % 均衡器抽头数 (奇数)
+clk_dly     = 1;    % 抽头更新延迟 (时钟周期数)
+par_num     = 4;    % 并行处理段数
+step        = 2^-8; % 步长
+Rx          = 2;    % 期望的输出功率 (X极化)
+Ry          = 2;    % 期望的输出功率 (Y极化)
 
-seg_num     = floor(length(SigX_in) / seg_len);
-clk_num     = ceil(seg_num / par_num);
+seg_num     = floor(length(SigX_in) / seg_len); % 总处理段数,floor向下取整
+clk_num     = ceil(seg_num / par_num);      % 抽头时钟周期数,ceil向上取整
 
 %% 数据预处理
 total_len = seg_len * seg_num;
 SigX_in = SigX_in(1:total_len);
 SigY_in = SigY_in(1:total_len);
 
+% 前导零填充以支持卷积运算
 SigX_in_padded = [zeros(tap_len - 1, 1); SigX_in];
 SigY_in_padded = [zeros(tap_len - 1, 1); SigY_in];
 
 %% 初始化均衡器抽头 (双极化)
+% 抽头的结构：
+% 每极化各有两个分支：自极化分支(xx, yy)和交叉极化分支(xy, yx)
+% 行数为抽头长度，列数为时钟周期数加上延迟周期数
+% 每行的含义：对应抽头的每个tap
+% 每列的含义：对应不同的时钟周期
+% 抽头在每个时钟周期更新一次，逐列存储
+
+% 为什么要多分配clk_dly个时钟周期的抽头?
+% 因为抽头更新时会有clk_dly个时钟周期的延迟,如果不多分配,
+% 则最后几个时钟周期的抽头无法更新,影响均衡效果.
 xx = zeros(tap_len, clk_num + clk_dly);
 yy = zeros(tap_len, clk_num + clk_dly);
 xy = zeros(tap_len, clk_num + clk_dly);
 yx = zeros(tap_len, clk_num + clk_dly);
 
+% 初始化为单位冲激响应，以避免初始时输出为零
 center_tap = (tap_len + 1) / 2;
 xx(center_tap, :) = 1;
-yy(center_tap, :) = 1;
+yy(center_tap, :) = 1;   % 仅自极化分支初始化为单位冲激响应，为何处于中心tap?原因是
 
 %% 输出缓存
 SigX_out = zeros(total_len, 1);
@@ -93,22 +105,24 @@ xy_accu = zeros(tap_len, 1);
 yx_accu = zeros(tap_len, 1);
 
 %% 频域卷积参数准备
-block_input_len = seg_len + tap_len - 1;
-conv_len = block_input_len + tap_len - 1;
-nfft_conv = 2^nextpow2(conv_len);
+block_input_len = seg_len + tap_len - 1;    % 每段输入包含前导样本后的长度
+conv_len = block_input_len + tap_len - 1;   % 卷积结果长度
+nfft_conv = 2^nextpow2(conv_len);           % FFT长度，取大于等于conv_len的最小2的幂次
 
-pad_input_x = zeros(nfft_conv, 1);
+% 零填充数组，作为FFT/IFFT的输入容器
+pad_input_x = zeros(nfft_conv, 1);  % 输入信号零填充
 pad_input_y = zeros(nfft_conv, 1);
-pad_xx = zeros(nfft_conv, 1);
+pad_xx = zeros(nfft_conv, 1);       % 抽头零填充
 pad_xy = zeros(nfft_conv, 1);
 pad_yx = zeros(nfft_conv, 1);
 pad_yy = zeros(nfft_conv, 1);
 
+% 频域抽头缓存，避免可能存在的重复FFT计算
 XX_fft_curr = [];
 XY_fft_curr = [];
 YX_fft_curr = [];
 YY_fft_curr = [];
-prev_clk_pos = -1;
+prev_clk_pos = -1;  % 上一个时钟位置标记，初始为无效值
 
 %% 第一步&第二步: 输入与抽头转换至频域, 频域乘积实现快速卷积
 for k = 1:seg_num
@@ -131,12 +145,14 @@ for k = 1:seg_num
     pad_input_x(1:block_input_len) = block_input_x;
     pad_input_y(1:block_input_len) = block_input_y;
 
+    % 仅当时钟位置变化时更新频域抽头缓存
     if clk_pos ~= prev_clk_pos
         pad_xx(:) = 0;
         pad_xy(:) = 0;
         pad_yx(:) = 0;
         pad_yy(:) = 0;
 
+        % 将当前时钟周期的抽头填充到零填充数组的前tap_len个位置
         pad_xx(1:tap_len) = xx_curr;
         pad_xy(1:tap_len) = xy_curr;
         pad_yx(1:tap_len) = yx_curr;
@@ -146,12 +162,14 @@ for k = 1:seg_num
         XY_fft_curr = my_fft(pad_xy);
         YX_fft_curr = my_fft(pad_yx);
         YY_fft_curr = my_fft(pad_yy);
-        prev_clk_pos = clk_pos;
+        prev_clk_pos = clk_pos;         % 更新上一个时钟位置标记
     end
 
+    % 输入信号转换至频域
     X_fft = my_fft(pad_input_x);
     Y_fft = my_fft(pad_input_y);
 
+    % 关键步骤: 频域乘积实现卷积，此处得到的是偏振分量的卷积结果
     conv_xx = my_ifft(X_fft .* XX_fft_curr);
     conv_xy = my_ifft(Y_fft .* XY_fft_curr);
     conv_yx = my_ifft(X_fft .* YX_fft_curr);
@@ -165,16 +183,27 @@ for k = 1:seg_num
     SigY_out(block_start:block_end) = block_out_y;
 
     %% 第三步: 计算误差并在频域卷积的基础上更新抽头
+
+    % 计算误差
     errx_block = Rx - abs(block_out_x).^2;
     erry_block = Ry - abs(block_out_y).^2;
 
+    % 存储误差用于后续分析
     errx_vec(block_start:block_end) = errx_block;
     erry_vec(block_start:block_end) = erry_block;
 
+    % 计算梯度，原理为误差乘以输出的共轭
     grad_x = step * (errx_block .* block_out_x);
     grad_y = step * (erry_block .* block_out_y);
 
     % 生成输入矩阵用于梯度累积
+    % 注意toeplitz函数的用法:
+    % 第一个参数是第一列, 第二个参数是第一行
+    % 用于构造卷积矩阵（Toeplitz矩阵）
+    % 第一列是从tap_len到末尾的样本
+    % 第一行是从tap_len倒序到1的样本
+    % 这样生成的矩阵每一行对应一个输出样本所用的输入样本
+    % 可以通过矩阵乘法实现批量时域卷积操作来计算梯度
     x_mat = toeplitz(block_input_x(tap_len:end), block_input_x(tap_len:-1:1));
     y_mat = toeplitz(block_input_y(tap_len:end), block_input_y(tap_len:-1:1));
 
@@ -183,6 +212,7 @@ for k = 1:seg_num
     yx_accu = yx_accu + x_mat' * grad_y;
     yy_accu = yy_accu + y_mat' * grad_y;
 
+    % 每par_num段更新一次抽头
     if mod(k, par_num) == 0
         update_clk_pos = clk_pos + clk_dly;
 
