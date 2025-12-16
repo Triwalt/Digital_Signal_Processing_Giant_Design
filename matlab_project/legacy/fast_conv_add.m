@@ -1,95 +1,357 @@
 function y = fast_conv_add(x, h, L)
-% fast_conv_add: Implements fast convolution using the Overlap-Add method.
+% =========================================================================
+%                   重叠相加法 (Overlap-Add) 快速卷积实现
+% =========================================================================
 %
-% ALGORITHM PRINCIPLE:
-% The Overlap-Add method performs convolution of a long signal with a short filter
-% by processing the signal in blocks and using the convolution theorem:
-% convolution in time domain = multiplication in frequency domain.
+% 【算法概述】
+%   本函数实现了基于 FFT 的重叠相加法 (Overlap-Add Method, OLA) 快速卷积算法。
+%   该方法是处理长序列与短滤波器卷积的经典技术，通过分块处理和利用卷积定理
+%   实现高效计算。
 %
-% PROCESSING STEPS:
-% 1. BLOCK SEGMENTATION: Divide input signal x into blocks of length L
-% 2. ZERO PADDING: Pad each block and filter h to FFT length N = L + M - 1
-% 3. FFT COMPUTATION: Transform both block and filter to frequency domain
-% 4. FREQUENCY MULTIPLICATION: Multiply FFT results element-wise
-% 5. IFFT COMPUTATION: Transform back to time domain
-% 6. OVERLAP-ADD: Add overlapping portions from adjacent blocks
+%   核心思想: 将长输入信号分成**不重叠的**数据块，对每块进行 FFT 快速卷积，
+%   由于每块卷积结果会延伸到相邻块的范围，因此需将相邻块的**重叠部分相加**
+%   来得到最终结果。
 %
-% ADVANTAGES:
-% - Computational complexity: O(N log N) vs O(N²) for direct convolution
-% - Memory efficient for long signals
-% - Suitable for real-time processing
+% 【卷积定理】
+%   时域卷积 ⟺ 频域乘法
 %
-% INPUTS:
-%   x : The long input signal vector (any length)
-%   h : The filter impulse response vector (typically much shorter than x)
-%   L : The processing block length (affects memory usage and efficiency)
+%   对于两个序列 x[n] 和 h[n]:
+%       y[n] = x[n] * h[n]  (时域线性卷积)
+%       Y[k] = X[k] · H[k]  (频域点乘)
 %
-% OUTPUT:
-%   y : Convolution result with length = length(x) + length(h) - 1
+%   其中 X[k] = DFT{x[n]}, H[k] = DFT{h[n]}, Y[k] = DFT{y[n]}
 %
-% COMPLEXITY ANALYSIS:
-% - Number of blocks: ceil(length(x)/L)
-% - FFT operations per block: 2 (forward) + 1 (inverse)
-% - Total complexity: O((length(x)/L) * N * log(N)) where N = 2^nextpow2(L+M-1)
+%   利用此性质，可将 O(N²) 的直接卷积转化为 O(N·log N) 的 FFT 运算
+%
+% 【分块卷积的数学基础】
+%   将长度为 Nx 的信号 x[n] 分成 K 个长度为 L 的不重叠块:
+%
+%       x[n] = Σ(i=0 to K-1) x_i[n - i·L]
+%
+%   其中 x_i[n] 是第 i 块，仅在 [0, L-1] 区间非零
+%
+%   利用卷积的线性性:
+%       y[n] = x[n] * h[n] = Σ(i=0 to K-1) (x_i[n - i·L] * h[n])
+%            = Σ(i=0 to K-1) y_i[n - i·L]
+%
+%   其中 y_i[n] = x_i[n] * h[n] 是第 i 块与滤波器的卷积结果
+%   长度为 L + M - 1 (超出块长 L，需要"重叠相加")
+%
+% 【为什么需要"重叠相加"】
+%   每个长度 L 的输入块与长度 M 的滤波器卷积，产生长度 (L + M - 1) 的输出
+%
+%   输入块 x_i (长度 L):
+%   ┌────────────────L────────────────┐
+%   │  x_i[0]  x_i[1]  ...  x_i[L-1]  │
+%   └─────────────────────────────────┘
+%
+%   卷积输出 y_i (长度 L + M - 1):
+%   ┌────────────────L────────────────┬────M-1────┐
+%   │    主体部分 (独立的 L 个点)      │  尾巴部分  │
+%   └─────────────────────────────────┴───────────┘
+%
+%   第 i 块的"尾巴"会延伸到第 (i+1) 块的起始位置
+%   因此需要将相邻块的重叠区域相加!
+%
+% 【重叠相加法 vs 重叠保留法】
+%   ┌──────────────┬──────────────────────┬──────────────────────┐
+%   │     特性     │   重叠相加法 (Add)    │   重叠保留法 (Save)   │
+%   ├──────────────┼──────────────────────┼──────────────────────┤
+%   │ 输入块处理   │  非重叠分段 (独立)    │  重叠提取 (共享M-1点) │
+%   │ 零填充位置   │  每块末尾填充 M-1 零  │  首块前端填充 M-1 零  │
+%   │ 输出块处理   │  保留全部，重叠相加   │  丢弃混叠，直接拼接   │
+%   │ FFT 长度     │  N >= L + M - 1      │  N > M - 1           │
+%   │ 输出拼接方式 │  重叠部分相加合并     │  直接顺序拼接         │
+%   │ 适用场景     │  离线批处理更直观     │  实时流处理更优        │
+%   │ 内存访问     │  输出需读-改-写       │  输入需回读重叠部分    │
+%   └──────────────┴──────────────────────┴──────────────────────┘
+%
+% 【处理流程示意图】
+%
+%   原始输入信号 x[n] (长度 Nx):
+%   ┌────────────────────────────────────────────────────────────┐
+%   │  x[0]  x[1]  x[2]  ...  x[Nx-2]  x[Nx-1]                   │
+%   └────────────────────────────────────────────────────────────┘
+%
+%   步骤1 - 非重叠分块 (块长度 L):
+%
+%   Block 0: ┌─────────L─────────┐
+%            │ x[0] ... x[L-1]   │
+%            └───────────────────┘
+%
+%   Block 1:                      ┌─────────L─────────┐
+%                                 │ x[L] ... x[2L-1]  │
+%                                 └───────────────────┘
+%
+%   Block 2:                                           ┌─────────L─────────┐
+%                                                      │ x[2L] ... x[3L-1] │
+%                                                      └───────────────────┘
+%
+%   步骤2 - 每块零填充到 N 点:
+%
+%   block_x_padded = [x_i[0], x_i[1], ..., x_i[L-1], 0, 0, ..., 0]
+%                    ├───────────L───────────┤├────── N-L ──────┤
+%
+%   步骤3-5 - FFT → 频域相乘 → IFFT (对每块):
+%
+%            Block_X = FFT(block_x_padded)
+%            Block_Y = Block_X .* H     (H = FFT(h_padded))
+%            block_y = IFFT(Block_Y)    (长度 N >= L+M-1)
+%
+%   步骤6 - 重叠相加:
+%
+%   输出构建过程 (K=3 块为例，显示如何重叠相加):
+%
+%   Block 0 输出:  ┌───────L───────┬─M-1─┐
+%                  │    y_0 主体   │尾巴0│
+%                  └───────────────┴─────┘
+%                  ↓               ↓
+%   Block 1 输出:                  ┌───────L───────┬─M-1─┐
+%                                  │    y_1 主体   │尾巴1│
+%                                  └───────────────┴─────┘
+%                                  ↓               ↓
+%   Block 2 输出:                                  ┌───────L───────┬─M-1─┐
+%                                                  │    y_2 主体   │尾巴2│
+%                                                  └───────────────┴─────┘
+%
+%   最终输出 y[n]:
+%   ┌───────L───────┬───────L───────┬───────L───────┬─M-1─┐
+%   │  y_0 主体     │ y_1主体+尾巴0 │ y_2主体+尾巴1 │尾巴2│
+%   └───────────────┴───────────────┴───────────────┴─────┘
+%                    ↑               ↑
+%                相加操作         相加操作
+%
+% 【算法复杂度分析】
+%   设输入长度 Nx, 滤波器长度 M, 分块长度 L:
+%
+%   块数: K = ceil(Nx / L)
+%   FFT 长度: N = 2^ceil(log2(L + M - 1))  (取 2 的幂次便于基2-FFT)
+%
+%   每块计算量:
+%     - FFT(N点):   O(N·log₂N)
+%     - 频域乘法:   O(N)
+%     - IFFT(N点):  O(N·log₂N)
+%
+%   总计算量: O(K · N · log₂N) = O((Nx/L) · N · log₂N)
+%
+%   效率优化:
+%     - L 太小 → 块数 K 过多，FFT 调用次数多，重叠区域比例大
+%     - L 太大 → 单块 FFT 代价高，但块数少
+%     - 经验值: L = 4M ~ 8M 通常较优
+%
+%   与直接卷积对比:
+%     直接卷积: O(Nx · M)
+%     OLA 方法: O(Nx · log(L+M))
+%     当 M 较大时，OLA 方法显著更快
+%
+% 【输入参数】
+%   x - 输入信号向量 (任意长度)
+%       - 可以是行向量或列向量，内部自动转换
+%
+%   h - 滤波器冲激响应向量 (长度 M)
+%       - FIR 滤波器系数
+%       - 通常远短于输入信号 x
+%
+%   L - 分块长度
+%       - 影响计算效率和内存使用
+%       - 建议 L >= M 以获得较好效率
+%       - 不要求为 2 的幂次 (内部自动计算合适的 FFT 长度)
+%
+% 【输出参数】
+%   y - 卷积结果向量，长度 = length(x) + length(h) - 1
+%       - 等价于 MATLAB 内置 conv(x, h) 的结果
+%
+% 【使用示例】
+%   % 示例1: 基本用法 - FIR 低通滤波
+%   x = randn(1, 10000);           % 10000 点随机输入信号
+%   h = fir1(64, 0.3);             % 65 阶 FIR 低通滤波器
+%   L = 256;                       % 分块长度
+%   y = fast_conv_add(x, h, L);    % 使用重叠相加法计算卷积
+%
+%   % 验证结果
+%   y_ref = conv(x, h);            % MATLAB 内置卷积
+%   max_error = max(abs(y - y_ref));  % 应接近机器精度
+%
+%   % 示例2: 音频信号滤波
+%   [audio, Fs] = audioread('speech.wav');
+%   h_lpf = fir1(128, 0.5);        % 低通滤波器
+%   y = fast_conv_add(audio', h_lpf, 512);
+%
+%   % 示例3: 与重叠保留法对比
+%   y_add = fast_conv_add(x, h, 256);   % 重叠相加法 (指定块长 L)
+%   y_save = fast_conv_save(x, h, 320); % 重叠保留法 (指定 FFT 长度 N)
+%   % 两者结果应完全一致
+%
+% 【参考文献】
+%   [1] Oppenheim, A.V., Schafer, R.W. "Discrete-Time Signal Processing"
+%       Chapter 8: The Discrete Fourier Transform
+%   [2] Rabiner, L.R., Gold, B. "Theory and Application of Digital
+%       Signal Processing", 1975
+%   [3] Smith, S.W. "The Scientist and Engineer's Guide to Digital
+%       Signal Processing", Chapter 18
+%   [4] Wikipedia: Overlap-add method
+%       https://en.wikipedia.org/wiki/Overlap-add_method
+%
+% =========================================================================
 
-    % Ensure row vectors for consistent indexing
-    if size(x,1) > 1, x = x.'; end
-    if size(h,1) > 1, h = h.'; end
+% =====================================================================
+% 步骤 0: 输入格式标准化
+% =====================================================================
+% 将输入统一转换为行向量，便于后续的索引操作
+% MATLAB 中行向量更适合用于水平拼接 [a, b] 操作
 
-    M = length(h);
-    Nx = length(x);
+if size(x,1) > 1, x = x.'; end   % 列向量转行向量
+if size(h,1) > 1, h = h.'; end   % 列向量转行向量
+
+M = length(h);    % 滤波器长度
+Nx = length(x);   % 输入信号长度
+
+% =====================================================================
+% 步骤 1: 确定 FFT 长度
+% =====================================================================
+% FFT 长度必须足够大，以确保:
+%   1. 能容纳每块的完整线性卷积结果 (长度 = L + M - 1)
+%   2. 避免时域混叠 (圆周卷积 = 线性卷积的条件)
+%
+% 最小 FFT 长度: N_min = L + M - 1
+% 实际 FFT 长度: N = 2^ceil(log2(N_min))  (取 2 的幂次，便于基2-FFT)
+%
+% 为什么 N >= L + M - 1 可以避免混叠?
+%   长度 L 的块与长度 M 的滤波器的线性卷积长度为 L + M - 1
+%   若 N >= L + M - 1，则 N 点圆周卷积 = 线性卷积 (无混叠)
+
+N_fft_min = L + M - 1;            % 最小 FFT 长度 (线性卷积输出长度)
+N = 2^nextpow2(N_fft_min);        % 取大于等于 N_fft_min 的最小 2 的幂
+
+% =====================================================================
+% 步骤 2: 滤波器频域预计算
+% =====================================================================
+% 将滤波器 h 零填充到长度 N，并预先计算其 FFT
+% 由于 H 在所有块中复用，只需计算一次
+%
+% 零填充: h_padded = [h(1), h(2), ..., h(M), 0, 0, ..., 0]
+%                    ├────── M ──────┤├────── N-M ──────┤
+
+h_padded = [h, zeros(1, N - M)];  % 滤波器零填充到 N 点
+H = my_fft(h_padded);             % 预计算滤波器的 N 点 FFT
+
+% =====================================================================
+% 步骤 3: 输入信号分块准备
+% =====================================================================
+
+% 3.1 计算所需的块数
+% 每块长度为 L，共需 ceil(Nx/L) 块才能覆盖整个输入信号
+num_blocks = ceil(Nx / L);
+
+% 3.2 输入信号末尾零填充
+% 将信号长度补齐为 L 的整数倍，便于分块处理
+% 填充后长度 = L × num_blocks
+x_padded = [x, zeros(1, L * num_blocks - Nx)];
+
+% =====================================================================
+% 步骤 4: 初始化输出缓冲区
+% =====================================================================
+% 线性卷积的标准输出长度 = Nx + M - 1
+% 预分配全零数组，后续通过累加填充结果
+
+y = zeros(1, Nx + M - 1);
+
+% =====================================================================
+% 步骤 5: 分块处理主循环
+% =====================================================================
+% 对每个数据块执行: 提取 → 零填充 → FFT → 频域乘法 → IFFT → 重叠相加
+
+for i = 1:num_blocks
+    % -----------------------------------------------------------------
+    % 5.1 提取第 i 个非重叠数据块
+    % -----------------------------------------------------------------
+    % 块起始位置: (i-1)*L + 1
+    % 块结束位置: i*L
+    % 相邻块不重叠，首尾相邻:
+    %   Block 1: [1, L]
+    %   Block 2: [L+1, 2L]
+    %   Block 3: [2L+1, 3L]
+    %   ...
     
-    % Determine the FFT size. It must be large enough to avoid time-domain aliasing.
-    N_fft_min = L + M - 1;
-    N = 2^nextpow2(N_fft_min);  % enforce power-of-two for my_fft
+    start_idx = (i-1)*L + 1;
+    end_idx = i*L;
+    block_x = x_padded(start_idx:end_idx);
     
-    % Pad the filter 'h' to the FFT size and compute its FFT once.
-    h_padded = [h, zeros(1, N - M)];
-    H = my_fft(h_padded);
+    % -----------------------------------------------------------------
+    % 5.2 块零填充并 FFT
+    % -----------------------------------------------------------------
+    % 将长度 L 的块零填充到长度 N
+    % block_x_padded = [block_x, 0, 0, ..., 0]
+    %                  ├───L───┤├────N-L────┤
+    %
+    % 零填充的目的:
+    %   确保 N 点圆周卷积 = L 点块与 M 点滤波器的线性卷积
     
-    % Determine the number of blocks needed to process the entire signal.
-    num_blocks = ceil(Nx / L);
+    block_x_padded = [block_x, zeros(1, N - L)];
+    Block_X = my_fft(block_x_padded);
     
-    % Pad the input signal 'x' so its length is a multiple of L.
-    x_padded = [x, zeros(1, L * num_blocks - Nx)];
+    % -----------------------------------------------------------------
+    % 5.3 频域乘法: 实现线性卷积
+    % -----------------------------------------------------------------
+    % 根据卷积定理:
+    %   DFT{x_i * h} = DFT{x_i} · DFT{h}
+    %
+    % 由于 N >= L + M - 1，圆周卷积等于线性卷积
+    % 点乘操作在频域高效实现时域卷积
     
-    % Initialize the output vector and an overlap buffer.
-    y = zeros(1, Nx + M - 1);
+    Block_Y = Block_X .* H;
     
-    % Process each block of the input signal.
-    for i = 1:num_blocks
-        % Extract the current block from the padded input signal.
-        start_idx = (i-1)*L + 1;
-        end_idx = i*L;
-        block_x = x_padded(start_idx:end_idx);
-        
-        % Pad the block to the FFT size and compute its FFT.
-        block_x_padded = [block_x, zeros(1, N - L)];
-        Block_X = my_fft(block_x_padded);
-        
-        % Perform frequency-domain multiplication.
-        Block_Y = Block_X .* H;
-        
-        % Compute the inverse FFT to get the block convolution result.
-        block_y = my_ifft(Block_Y);
-        if size(block_y, 1) > 1
-            block_y = block_y.';
-        end
-        
-        % Perform the Overlap-Add operation.
-        y_start = (i-1)*L + 1;
-        y_end = y_start + N - 1;
-        
-        % Add the convoluted block to the corresponding section of the output vector.
-        % This correctly handles the overlapping regions between blocks.
-        if y_end > length(y)
-            y_end_limited = length(y);
-            y(y_start:y_end_limited) = y(y_start:y_end_limited) + block_y(1:(y_end_limited - y_start + 1));
-        else
-            y(y_start:y_end) = y(y_start:y_end) + block_y;
-        end
+    % -----------------------------------------------------------------
+    % 5.4 IFFT: 变换回时域
+    % -----------------------------------------------------------------
+    % block_y[n] = IDFT{Block_Y[k]}
+    % 长度为 N，但有效卷积结果在前 (L + M - 1) 点
+    
+    block_y = my_ifft(Block_Y);
+    
+    % 确保 block_y 为行向量 (与输出 y 格式一致)
+    if size(block_y, 1) > 1
+        block_y = block_y.';
     end
     
-    % Trim the output vector to the correct final length (Nx + M - 1).
-    y = y(1:(Nx + M - 1));
+    % -----------------------------------------------------------------
+    % 5.5 "重叠相加" (Overlap-Add) 操作
+    % -----------------------------------------------------------------
+    % 每块的卷积输出长度为 N >= L + M - 1
+    % 超出块长 L 的部分会与下一块的输出重叠
+    %
+    % 输出放置位置:
+    %   Block i 的输出起点: y_start = (i-1)*L + 1
+    %   Block i 的输出终点: y_start + N - 1
+    %
+    % 第 i 块的输出 block_y 包含:
+    %   - 前 L 点: 独立部分 (或与前一块尾巴重叠)
+    %   - 后 M-1 点: "尾巴"部分 (将与下一块重叠)
+    %
+    % 通过累加操作，自动实现重叠区域的正确合并:
+    %   y[y_start:y_end] += block_y
+    
+    y_start = (i-1)*L + 1;
+    y_end = y_start + N - 1;
+    
+    % 处理边界情况: 最后一块的输出可能超出 y 的预分配长度
+    if y_end > length(y)
+        % 只处理 y 范围内的部分
+        y_end_limited = length(y);
+        y(y_start:y_end_limited) = y(y_start:y_end_limited) + ...
+            block_y(1:(y_end_limited - y_start + 1));
+    else
+        % 正常累加
+        y(y_start:y_end) = y(y_start:y_end) + block_y;
+    end
+end
+
+% =====================================================================
+% 步骤 6: 输出裁剪
+% =====================================================================
+% 线性卷积的标准输出长度 = Nx + M - 1
+% 输出缓冲区在初始化时已设为此长度，此步骤确保输出正确
+% (实际上在本实现中，y 已预分配为正确长度，此行为保险措施)
+
+y = y(1:(Nx + M - 1));
 end

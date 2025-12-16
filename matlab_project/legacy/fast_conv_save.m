@@ -1,103 +1,333 @@
 function y = fast_conv_save(x, h, N)
-% fast_conv_save: Implements fast convolution using the Overlap-Save method.
+% =========================================================================
+%                   重叠保留法 (Overlap-Save) 快速卷积实现
+% =========================================================================
 %
-% ALGORITHM PRINCIPLE:
-% The Overlap-Save method is an alternative to Overlap-Add for fast convolution.
-% It processes overlapping blocks of the input signal and "saves" only the
-% valid (non-aliased) portion of each block's convolution result.
+% 【算法概述】
+%   本函数实现了基于 FFT 的重叠保留法 (Overlap-Save Method) 快速卷积算法。
+%   该方法是处理长序列与短滤波器卷积的高效技术，特别适合实时信号处理和
+%   流式数据处理场景。
 %
-% PROCESSING STEPS:
-% 1. OVERLAP PREPARATION: Prepend (M-1) zeros to input signal
-% 2. BLOCK EXTRACTION: Extract overlapping blocks of length N from signal
-% 3. FFT COMPUTATION: Transform block and filter to frequency domain
-% 4. FREQUENCY MULTIPLICATION: Multiply FFT results element-wise
-% 5. IFFT COMPUTATION: Transform back to time domain
-% 6. OVERLAP-SAVE: Discard first (M-1) samples, save remaining L = N-M+1 samples
+%   核心思想: 将长输入信号分成**重叠的**数据块，对每块进行 FFT 快速卷积，
+%   然后**丢弃**每块结果中的混叠部分，只**保留**有效输出点。
 %
-% KEY DIFFERENCES FROM OVERLAP-ADD:
-% - Uses overlapping input blocks instead of non-overlapping blocks
-% - Discards aliased samples instead of adding overlapping output portions
-% - Often more efficient for filtering applications
-% - Better suited for streaming/real-time processing
+% 【线性卷积与圆周卷积的关系】
+%   对于长度为 Nx 的信号 x[n] 和长度为 M 的滤波器 h[n]:
 %
-% INPUTS:
-%   x : The long input signal vector (any length)
-%   h : The filter impulse response vector (length M)
-%   N : The FFT size (block size), must be power of 2 and N > M-1
+%   线性卷积: y[n] = x[n] * h[n]，结果长度 = Nx + M - 1
 %
-% OUTPUT:
-%   y : Convolution result with length = length(x) + length(h) - 1
+%   若直接使用 N 点 FFT 计算卷积 (N < Nx + M - 1):
+%       圆周卷积结果 = 线性卷积结果的时域混叠
 %
-% EFFICIENCY CONSIDERATIONS:
-% - Valid output samples per block: L = N - M + 1
-% - Overlap length: M - 1 samples
-% - Optimal N choice balances FFT efficiency vs. overlap overhead
+%   混叠现象: 前 (M-1) 个点会受到"环绕"效应的污染
+%
+%               卷积结果:  [混叠区 | 有效区]
+%                          ├──M-1──┼──L──┤
+%                          └───────N───────┘
+%
+% 【重叠保留法原理】
+%   巧妙利用混叠规律: 每个长度 N 的数据块经过 N 点圆周卷积后:
+%   - 前 (M-1) 个点: 受混叠影响，必须丢弃
+%   - 后 L = N-M+1 个点: 等于线性卷积的有效结果
+%
+%   为保证输出连续性，相邻数据块之间需**重叠 (M-1) 个点**
+%
+% 【重叠保留法 vs 重叠相加法】
+%   ┌──────────────┬──────────────────────┬──────────────────────┐
+%   │     特性     │   重叠保留法 (Save)   │   重叠相加法 (Add)   │
+%   ├──────────────┼──────────────────────┼──────────────────────┤
+%   │ 输入块处理   │  重叠提取 (共享M-1点) │  非重叠分段 (独立)    │
+%   │ 输出块处理   │  丢弃混叠，直接拼接   │  保留全部，重叠相加   │
+%   │ 每块有效输出 │  L = N - M + 1 点    │  L + M - 1 点需叠加   │
+%   │ 输出拼接方式 │  直接顺序拼接        │  重叠部分相加合并      │
+%   │ 适用场景     │  实时流处理更优       │  离线批处理更直观      │
+%   │ 内存访问     │  输入需回读重叠部分   │  输出需读-改-写       │
+%   └──────────────┴──────────────────────┴──────────────────────┘
+%
+% 【处理流程示意图】
+%
+%   原始输入信号 x[n] (长度 Nx):
+%   ┌────────────────────────────────────────────────────────┐
+%   │  x[0]  x[1]  x[2]  x[3]  ...  x[Nx-2]  x[Nx-1]         │
+%   └────────────────────────────────────────────────────────┘
+%
+%   步骤1 - 前置零填充 (M-1 个零):
+%   ┌─────────┬────────────────────────────────────────────────┐
+%   │ 0 0 ... │  x[0]  x[1]  x[2]  x[3]  ...  x[Nx-1]          │
+%   └─────────┴────────────────────────────────────────────────┘
+%    ├─M-1个─┤
+%
+%   步骤2 - 重叠分块提取 (块长度 N，重叠 M-1):
+%
+%   Block 1: ┌─────────────────────N─────────────────────┐
+%            │ [0...0 (M-1个)] [x[0]...x[L-1]]           │
+%            └───────────────────────────────────────────┘
+%
+%   Block 2: ┌─────────────────────N─────────────────────┐
+%            │ [x[L-M+1]...x[L-1]] [x[L]...x[2L-1]]      │
+%            └───────────────────────────────────────────┘
+%              ├─重叠 M-1个─┤      ├───新数据 L个───┤
+%
+%   Block 3: ...依此类推...
+%
+%   步骤3-5 - FFT → 频域相乘 → IFFT (对每块):
+%
+%            Block_X = FFT(block_x)
+%            Block_Y = Block_X .* H     (H = FFT(h_padded))
+%            block_y = IFFT(Block_Y)
+%
+%   步骤6 - 保留有效输出 (丢弃前 M-1 点):
+%
+%   block_y 结构:
+%   ┌────────────────────────────────────────────────┐
+%   │   混叠区 (丢弃)   │      有效区 (保留)          │
+%   │    M-1 个点       │       L = N-M+1 个点        │
+%   └────────────────────────────────────────────────┘
+%                       ↓
+%                  拼接到输出
+%
+%   最终输出 y[n]:
+%   ┌────────────────────────────────────────────────────────────┐
+%   │ Block1有效 │ Block2有效 │ Block3有效 │  ...  │ 最后裁剪     │
+%   └────────────────────────────────────────────────────────────┘
+%
+% 【算法复杂度分析】
+%   设输入长度 Nx, 滤波器长度 M, FFT 块长 N:
+%
+%   每块有效输出点数: L = N - M + 1
+%   所需块数: K = ceil((Nx + M - 1) / L)
+%
+%   每块计算量:
+%     - FFT(N点):   O(N·log₂N)
+%     - 频域乘法:   O(N)
+%     - IFFT(N点):  O(N·log₂N)
+%
+%   总计算量: O(K · N · log₂N) = O((Nx/L) · N · log₂N)
+%
+%   最优 N 选择:
+%     - N 太小 → 块数 K 增多，总 FFT 次数增多
+%     - N 太大 → 单次 FFT 代价高，且有效率 L/N 趋近于 1 的收益递减
+%     - 经验值: N = 4M ~ 8M 通常较优
+%
+% 【输入参数】
+%   x - 输入信号向量 (任意长度)
+%       - 可以是行向量或列向量，内部自动转换
+%
+%   h - 滤波器冲激响应向量 (长度 M)
+%       - FIR 滤波器系数
+%
+%   N - FFT 块大小
+%       - 必须是 2 的整数次幂 (如 64, 128, 256, ...)
+%       - 必须满足 N > M - 1 (即 N >= M)
+%       - 建议 N >= 2M 以获得较好效率
+%
+% 【输出参数】
+%   y - 卷积结果向量，长度 = length(x) + length(h) - 1
+%       - 等价于 MATLAB 内置 conv(x, h) 的结果
+%
+% 【使用示例】
+%   % 示例1: 基本用法 - FIR 低通滤波
+%   x = randn(1, 10000);           % 10000 点随机输入信号
+%   h = fir1(64, 0.3);             % 65 阶 FIR 低通滤波器
+%   N = 256;                       % FFT 块大小
+%   y = fast_conv_save(x, h, N);   % 使用重叠保留法计算卷积
+%
+%   % 验证结果
+%   y_ref = conv(x, h);            % MATLAB 内置卷积
+%   max_error = max(abs(y - y_ref));  % 应接近机器精度
+%
+%   % 示例2: 与重叠相加法对比
+%   y_save = fast_conv_save(x, h, 256);  % 重叠保留法
+%   y_add = fast_conv_os(x, h, 256);     % 重叠相加法
+%   % 两者结果应完全一致
+%
+% 【参考文献】
+%   [1] Oppenheim, A.V., Schafer, R.W. "Discrete-Time Signal Processing"
+%       Chapter 8: The Discrete Fourier Transform
+%   [2] Rabiner, L.R., Gold, B. "Theory and Application of Digital
+%       Signal Processing", 1975
+%   [3] Smith, S.W. "The Scientist and Engineer's Guide to Digital
+%       Signal Processing", Chapter 18
+%
+% =========================================================================
 
-    % Ensure row vectors for consistent indexing
-    if size(x,1) > 1, x = x.'; end
-    if size(h,1) > 1, h = h.'; end
+% =====================================================================
+% 步骤 0: 输入格式标准化
+% =====================================================================
+% 将输入统一转换为行向量，便于后续的索引操作
+% MATLAB 中行向量更适合用于水平拼接 [a, b] 操作
 
-    M = length(h);
-    Nx = length(x);
+if size(x,1) > 1, x = x.'; end   % 列向量转行向量
+if size(h,1) > 1, h = h.'; end   % 列向量转行向量
 
-    % N must be large enough to contain the filter response.
-    if N <= M-1
-        error('FFT size N must be greater than filter length M-1.');
-    end
+M = length(h);    % 滤波器长度
+Nx = length(x);   % 输入信号长度
 
-    % Enforce power-of-two FFT size to match my_fft expectations exactly
-    if N ~= 2^nextpow2(N)
-        error('FFT size N must be a power of 2. Provided N = %d.', N);
-    end
+% =====================================================================
+% 步骤 1: 参数有效性验证
+% =====================================================================
 
-    % The number of valid output points from each processed block.
-    L = N - M + 1;
+% 检查 FFT 长度是否足够
+% N 必须大于 M-1，否则每块无有效输出点
+% 数学约束: L = N - M + 1 > 0  →  N > M - 1
+if N <= M-1
+    error('FFT 长度 N 必须大于滤波器长度 M-1 (当前 N=%d, M=%d)', N, M);
+end
 
-    % Pad the filter 'h' to the FFT size and compute its FFT once.
-    h_padded = [h, zeros(1, N - M)];
-    H = my_fft(h_padded);
+% 检查 N 是否为 2 的整数次幂
+% 基2-FFT 算法要求输入长度为 2^k
+if N ~= 2^nextpow2(N)
+    error('FFT 长度 N 必须是 2 的整数次幂，当前 N = %d', N);
+end
 
-    % --- Robust padding and block calculation ---
-    % 1. Prepend M-1 zeros to the input signal to handle initial overlap.
-    x_prepended = [zeros(1, M - 1), x];
+% =====================================================================
+% 步骤 2: 关键参数计算
+% =====================================================================
 
-    % 2. Calculate the number of blocks needed to cover the entire prepended signal.
-    %    Each block produces L valid output samples.
-    num_blocks = ceil(length(x_prepended) / L);
+% L: 每块的有效输出点数
+% 每个长度 N 的块经过圆周卷积后:
+%   - 前 M-1 点: 受时域混叠影响，必须丢弃
+%   - 后 L 点: 等于线性卷积结果，保留使用
+L = N - M + 1;
 
-    % 3. Pad the signal at the end so its total length is suitable for block processing.
-    target_len = (num_blocks - 1) * L + N;
-    x_padded = [x_prepended, zeros(1, target_len - length(x_prepended))];
+% =====================================================================
+% 步骤 3: 滤波器频域预计算
+% =====================================================================
+% 将滤波器 h 零填充到长度 N，并预先计算其 FFT
+% 由于 H 在所有块中复用，只需计算一次
+%
+% 零填充: h_padded = [h(1), h(2), ..., h(M), 0, 0, ..., 0]
+%                    ├────── M ──────┤├────── N-M ──────┤
 
-    % Initialize the output vector to hold all valid samples.
-    y_full = zeros(1, num_blocks * L);
+h_padded = [h, zeros(1, N - M)];  % 滤波器零填充到 N 点
+H = my_fft(h_padded);             % 预计算滤波器的 N 点 FFT
 
-    % Process each block.
-    for i = 1:num_blocks
-        % Extract the current overlapping block of size N.
-        start_idx = (i-1)*L + 1;
-        end_idx = start_idx + N - 1;
-        block_x = x_padded(start_idx:end_idx);
+% =====================================================================
+% 步骤 4: 输入信号预处理
+% =====================================================================
 
-        % Compute the FFT of the block.
-        Block_X = my_fft(block_x);
+% 4.1 前置零填充
+% 在信号开头填充 (M-1) 个零
+% 目的: 确保第一块的有效输出从 y[0] 开始
+%
+% 原理: 第一块中前 M-1 点将被丢弃
+%       若不填充，会丢失 x 的前 M-1 点对应的卷积结果
+%       填充后，丢弃的是零与 h 的卷积，不影响实际结果
+%
+% x_prepended = [0, 0, ..., 0, x[0], x[1], ..., x[Nx-1]]
+%               ├─── M-1 ───┤├──────── Nx ────────┤
 
-        % Perform frequency-domain multiplication.
-        Block_Y = Block_X .* H;
+x_prepended = [zeros(1, M - 1), x];
 
-        % Compute the inverse FFT.
-        block_y = my_ifft(Block_Y);
+% 4.2 计算所需的块数
+% 每块贡献 L 个有效输出点
+% 需要覆盖整个预填充后的信号
+num_blocks = ceil(length(x_prepended) / L);
 
-        % "Save" step: Discard the first M-1 points and keep the valid L points.
-        valid_y = block_y(M:N);
+% 4.3 末尾零填充
+% 确保最后一块也能完整提取 N 个点
+% 目标长度: 需要能容纳 num_blocks 个重叠块
+%   第 1 块起点: 1,      终点: N
+%   第 2 块起点: L+1,    终点: L+N
+%   第 k 块起点: (k-1)*L+1, 终点: (k-1)*L+N
+%
+% 最后一块终点 = (num_blocks-1)*L + N
+target_len = (num_blocks - 1) * L + N;
+x_padded = [x_prepended, zeros(1, target_len - length(x_prepended))];
 
-        % Place the valid samples into the correct position in the output vector.
-        y_start = (i-1)*L + 1;
-        y_end = i*L;
-        y_full(y_start:y_end) = valid_y;
-    end
+% =====================================================================
+% 步骤 5: 初始化输出缓冲区
+% =====================================================================
+% 分配足够空间存储所有块的有效输出
+% 最终会裁剪到正确长度
 
-    % Trim the fully constructed output vector to the correct final length (Nx + M - 1).
-    y = y_full(1:(Nx + M - 1));
+y_full = zeros(1, num_blocks * L);
+
+% =====================================================================
+% 步骤 6: 分块处理主循环
+% =====================================================================
+% 对每个数据块执行: 提取 → FFT → 频域乘法 → IFFT → 保留有效部分
+
+for i = 1:num_blocks
+    % -----------------------------------------------------------------
+    % 6.1 提取第 i 个重叠数据块
+    % -----------------------------------------------------------------
+    % 块起始位置: (i-1)*L + 1  (每块向前滑动 L 个点)
+    % 块结束位置: start_idx + N - 1  (块长度固定为 N)
+    %
+    % 相邻块重叠 M-1 个点:
+    %   Block i   终点: (i-1)*L + N
+    %   Block i+1 起点: i*L + 1
+    %   重叠区间: [i*L+1, (i-1)*L+N] = [i*L+1, i*L+N-L]
+    %   重叠长度: N - L = M - 1 ✓
+    
+    start_idx = (i-1)*L + 1;
+    end_idx = start_idx + N - 1;
+    block_x = x_padded(start_idx:end_idx);
+    
+    % -----------------------------------------------------------------
+    % 6.2 FFT: 将数据块变换到频域
+    % -----------------------------------------------------------------
+    % Block_X[k] = DFT{block_x[n]}, k = 0, 1, ..., N-1
+    
+    Block_X = my_fft(block_x);
+    
+    % -----------------------------------------------------------------
+    % 6.3 频域乘法: 实现圆周卷积
+    % -----------------------------------------------------------------
+    % 根据卷积定理:
+    %   DFT{x ⊛ h} = DFT{x} · DFT{h}
+    %
+    % 其中 ⊛ 表示圆周卷积 (circular convolution)
+    % 点乘操作在频域实现时域的圆周卷积
+    
+    Block_Y = Block_X .* H;
+    
+    % -----------------------------------------------------------------
+    % 6.4 IFFT: 变换回时域
+    % -----------------------------------------------------------------
+    % block_y[n] = IDFT{Block_Y[k]}
+    % 此时 block_y 是 block_x 与 h_padded 的 N 点圆周卷积结果
+    
+    block_y = my_ifft(Block_Y);
+    
+    % -----------------------------------------------------------------
+    % 6.5 "保留" (Save) 操作: 提取有效输出点
+    % -----------------------------------------------------------------
+    % block_y 结构 (共 N 点):
+    %   索引 1 ~ M-1:    混叠污染区 (丢弃)
+    %   索引 M ~ N:      有效输出区 (保留 L = N-M+1 点)
+    %
+    % 为什么前 M-1 点是混叠的?
+    %   圆周卷积中，结果的第 n 点由以下求和得到:
+    %     y_circ[n] = Σ(m=0 to M-1) h[m] · x_circ[((n-m)) mod N]
+    %
+    %   当 n < M-1 时，索引 (n-m) 可能为负，导致"环绕"到块末尾
+    %   这种环绕造成的错误结果即为混叠
+    %
+    %   当 n >= M-1 时，索引 (n-m) 始终非负，无环绕发生
+    %   此时圆周卷积 = 线性卷积，结果有效
+    
+    valid_y = block_y(M:N);
+    
+    % -----------------------------------------------------------------
+    % 6.6 输出拼接
+    % -----------------------------------------------------------------
+    % 将有效输出点顺序放入输出缓冲区
+    % 第 i 块的 L 个有效点 → y_full 的第 (i-1)*L+1 到 i*L 位置
+    
+    y_start = (i-1)*L + 1;
+    y_end = i*L;
+    y_full(y_start:y_end) = valid_y;
+end
+
+% =====================================================================
+% 步骤 7: 输出裁剪
+% =====================================================================
+% 线性卷积的标准输出长度 = Nx + M - 1
+% y_full 可能略长于此 (由于块边界对齐的末尾填充)
+% 裁剪到正确长度
+
+y = y_full(1:(Nx + M - 1));
 end
 
