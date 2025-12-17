@@ -17,8 +17,8 @@ if numel(st) == 1
     clc;
     clear;
     close all;
-    enable_vv_phase_lock = false;
-    enable_plot_output = false;
+    enable_vv_phase_lock = true;
+    enable_plot_output = true;
 end
 
 % 确保配置变量存在
