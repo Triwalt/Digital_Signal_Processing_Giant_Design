@@ -33,73 +33,210 @@ function generate_cma_parameter_analysis()
     S = load(dataFile);
     data = S.report_data;
     
-    %% ==================== 创建简化分析报告图 ====================
+    %% ==================== 创建深度分析报告图 ====================
     
-    figure('Name', 'CMA参数深度分析', 'Position', [50, 50, 1400, 800]);
+    figure('Name', 'CMA参数深度分析', 'Position', [50, 50, 1600, 900]);
     
     %% ========== 1. 步长分析 ==========
     step_study = data.step_study;
     step_values = step_study.values;
     step_labels = step_study.labels;
     
-    % 过滤掉NaN值用于分析
-    valid_step = ~isnan(step_study.evm_after);
+    % 检测发散点（兼容新旧数据格式）
+    if isfield(step_study, 'is_diverged')
+        valid_step = ~step_study.is_diverged;
+        diverged_step = step_study.is_diverged;
+    else
+        valid_step = ~isnan(step_study.evm_after);
+        diverged_step = isnan(step_study.evm_after);
+    end
     
-    % 1.1 步长-EVM-收敛
-    subplot(2, 3, 1);
+    % 1.1 步长-恒模误差-收敛综合图（带发散标记）
+    subplot(3, 4, 1);
     yyaxis left;
     semilogx(step_values(valid_step), step_study.evm_after(valid_step), 'b-o', 'LineWidth', 2, 'MarkerSize', 8);
-    ylabel('EVM (%)', 'Color', 'b');
-    ylim([45 47]);
+    ylabel('恒模误差 (%)', 'Color', 'b');
     
     yyaxis right;
     semilogx(step_values(valid_step), step_study.steady_state_err(valid_step), 'r-s', 'LineWidth', 2, 'MarkerSize', 8);
+    hold on;
+    % 发散点用大红X标记
+    if any(diverged_step)
+        ylims = ylim;
+        semilogx(step_values(diverged_step), repmat(ylims(2)*0.9, sum(diverged_step), 1), ...
+                 'kx', 'MarkerSize', 12, 'LineWidth', 3);
+    end
     ylabel('稳态误差', 'Color', 'r');
     
     xlabel('步长 μ');
-    title('步长 vs EVM/稳态误差');
+    title('步长 vs 恒模误差/稳态误差');
     grid on;
+    xlim([min(step_values)/2, max(step_values)*2]);
     
-    % 1.2 不同步长收敛曲线
-    subplot(2, 3, 2);
-    colors = lines(sum(valid_step));
-    color_idx = 1;
+    % 1.2 步长-收敛速度趋势（带发散标记）
+    subplot(3, 4, 2);
+    semilogx(step_values(valid_step), step_study.convergence_idx(valid_step)/1000, 'g-^', 'LineWidth', 2, 'MarkerSize', 8);
+    hold on;
+    if any(diverged_step)
+        ylims = ylim;
+        semilogx(step_values(diverged_step), repmat(ylims(2)*0.95, sum(diverged_step), 1), ...
+                 'rx', 'MarkerSize', 15, 'LineWidth', 3);
+        legend('收敛', '发散', 'Location', 'best');
+    end
+    xlabel('步长 μ');
+    ylabel('收敛点 (×10³)');
+    title('步长 vs 收敛速度');
+    grid on;
+    xlim([min(step_values)/2, max(step_values)*2]);
+    
+    % 标注最优区域
+    optimal_step_range = step_values >= 2^-10 & step_values <= 2^-7;
+    if any(optimal_step_range & valid_step')
+        xline(2^-9, '--', 'Color', [0 0.6 0], 'LineWidth', 1.5, 'Label', '推荐');
+    end
+    
+    % 1.3 不同步长收敛曲线
+    subplot(3, 4, 3);
+    colors = lines(12);
     legend_entries = {};
-    for i = find(valid_step)'
-        if ismember(i, [1, 3, 5, 6])
-            result = step_study.results{i};
-            err_smooth = movmean(abs(result.errx_vec), 2000);
-            plot((1:length(err_smooth))/1000, err_smooth, 'LineWidth', 1.5, 'Color', colors(color_idx,:));
-            hold on;
-            legend_entries{end+1} = step_labels{i};
-            color_idx = color_idx + 1;
-        end
+    plot_indices = find(valid_step);
+    % 选择代表性步长展示
+    display_indices = plot_indices(1:min(2,length(plot_indices)):end);
+    display_indices = display_indices(1:min(5, length(display_indices)));
+    for idx = 1:length(display_indices)
+        i = display_indices(idx);
+        result = step_study.results{i};
+        err_smooth = movmean(abs(result.errx_vec), 2000);
+        plot((1:length(err_smooth))/1000, err_smooth, 'LineWidth', 1.5, 'Color', colors(idx,:));
+        hold on;
+        legend_entries{end+1} = step_labels{i};
     end
     xlabel('样本索引 (×10³)');
     ylabel('|误差|');
-    title('不同步长收敛曲线');
-    legend(legend_entries, 'Location', 'northeast');
+    title('不同步长收敛曲线对比');
+    legend(legend_entries, 'Location', 'northeast', 'FontSize', 8);
     grid on;
-    xlim([0 100]);
+    xlim([0 min(150, length(err_smooth)/1000)]);
+    
+    % 1.4 步长综合性能评分（折线图）
+    subplot(3, 4, 4);
+    % 归一化各指标到0-1范围
+    norm_evm = (step_study.evm_after(valid_step) - min(step_study.evm_after(valid_step))) / ...
+               (max(step_study.evm_after(valid_step)) - min(step_study.evm_after(valid_step)) + 1e-10);
+    norm_conv = (step_study.convergence_idx(valid_step) - min(step_study.convergence_idx(valid_step))) / ...
+                (max(step_study.convergence_idx(valid_step)) - min(step_study.convergence_idx(valid_step)) + 1e-10);
+    norm_steady = (step_study.steady_state_err(valid_step) - min(step_study.steady_state_err(valid_step))) / ...
+                  (max(step_study.steady_state_err(valid_step)) - min(step_study.steady_state_err(valid_step)) + 1e-10);
+    
+    % 收敛速度得分：发散时置零
+    conv_score = 1 - norm_conv(:);
+    diverged_in_valid = step_study.is_diverged(valid_step);
+    conv_score(diverged_in_valid) = 0;
+    
+    semilogx(step_values(valid_step), 1-norm_evm(:), 'b-o', 'LineWidth', 2, 'MarkerSize', 6);
+    hold on;
+    semilogx(step_values(valid_step), conv_score, 'r-s', 'LineWidth', 2, 'MarkerSize', 6);
+    semilogx(step_values(valid_step), 1-norm_steady(:), 'g-^', 'LineWidth', 2, 'MarkerSize', 6);
+    
+    % 标记发散点
+    if any(diverged_in_valid)
+        plot(step_values(valid_step & step_study.is_diverged'), conv_score(diverged_in_valid), ...
+             'rx', 'MarkerSize', 10, 'LineWidth', 2);
+    end
+    
+    xlabel('步长 μ');
+    ylabel('归一化得分 (越高越好)');
+    title('步长综合性能评分');
+    legend('恒模误差', '收敛速度', '稳态精度', 'Location', 'best', 'FontSize', 8);
+    grid on;
+    xlim([min(step_values)/2, max(step_values)*2]);
     
     %% ========== 2. 抽头长度分析 ==========
     tap_study = data.tap_study;
     tap_values = tap_study.values;
-    valid_tap = ~isnan(tap_study.evm_after);
     
-    % 2.1 抽头长度-EVM-时间
-    subplot(2, 3, 3);
+    % 检测发散点（兼容新旧数据格式）
+    if isfield(tap_study, 'is_diverged')
+        valid_tap = ~tap_study.is_diverged;
+        diverged_tap = tap_study.is_diverged;
+    else
+        valid_tap = ~isnan(tap_study.evm_after);
+        diverged_tap = isnan(tap_study.evm_after);
+    end
+    
+    % 2.1 抽头长度-恒模误差趋势（带发散标记）
+    subplot(3, 4, 5);
+    plot(tap_values(valid_tap), tap_study.evm_after(valid_tap), 'b-o', 'LineWidth', 2, 'MarkerSize', 8);
+    hold on;
+    if any(diverged_tap)
+        ylims = ylim;
+        plot(tap_values(diverged_tap), repmat(ylims(2)*0.95, sum(diverged_tap), 1), ...
+             'rx', 'MarkerSize', 12, 'LineWidth', 3);
+    end
+    xlabel('抽头长度 L');
+    ylabel('恒模误差 (%)');
+    title('抽头长度 vs 恒模误差');
+    grid on;
+    xlim([0, max(tap_values)*1.1]);
+    
+    % 标注最优点
+    [min_evm, min_idx] = min(tap_study.evm_after(valid_tap));
+    valid_taps = tap_values(valid_tap);
+    hold on;
+    plot(valid_taps(min_idx), min_evm, 'rp', 'MarkerSize', 15, 'MarkerFaceColor', 'r');
+    text(valid_taps(min_idx), min_evm + 0.1, sprintf('最优: L=%d', valid_taps(min_idx)), 'FontSize', 9);
+    
+    % 2.2 抽头长度-执行时间趋势（带发散标记）
+    subplot(3, 4, 6);
+    plot(tap_values(valid_tap), tap_study.exec_time(valid_tap), 'r-s', 'LineWidth', 2, 'MarkerSize', 8);
+    hold on;
+    if any(diverged_tap)
+        ylims = ylim;
+        plot(tap_values(diverged_tap), repmat(ylims(2)*0.95, sum(diverged_tap), 1), ...
+             'rx', 'MarkerSize', 12, 'LineWidth', 3);
+    end
+    xlabel('抽头长度 L');
+    ylabel('执行时间 (s)');
+    title('抽头长度 vs 执行时间');
+    grid on;
+    xlim([0, max(tap_values)*1.1]);
+    
+    % 2.3 抽头长度-收敛速度趋势（带发散标记）
+    subplot(3, 4, 7);
+    plot(tap_values(valid_tap), tap_study.convergence_idx(valid_tap)/1000, 'g-^', 'LineWidth', 2, 'MarkerSize', 8);
+    hold on;
+    if any(diverged_tap)
+        ylims = ylim;
+        plot(tap_values(diverged_tap), repmat(ylims(2)*0.95, sum(diverged_tap), 1), ...
+             'rx', 'MarkerSize', 12, 'LineWidth', 3);
+        legend('收敛', '发散', 'Location', 'best');
+    end
+    xlabel('抽头长度 L');
+    ylabel('收敛点 (×10³)');
+    title('抽头长度 vs 收敛速度');
+    grid on;
+    xlim([0, max(tap_values)*1.1]);
+    
+    % 2.4 抽头长度综合权衡图（带发散标记）
+    subplot(3, 4, 8);
     yyaxis left;
     plot(tap_values(valid_tap), tap_study.evm_after(valid_tap), 'b-o', 'LineWidth', 2, 'MarkerSize', 8);
-    ylabel('EVM (%)', 'Color', 'b');
+    ylabel('恒模误差 (%)', 'Color', 'b');
     
     yyaxis right;
     plot(tap_values(valid_tap), tap_study.exec_time(valid_tap), 'r-s', 'LineWidth', 2, 'MarkerSize', 8);
+    hold on;
+    if any(diverged_tap)
+        ylims = ylim;
+        plot(tap_values(diverged_tap), repmat(ylims(2)*0.95, sum(diverged_tap), 1), ...
+             'kx', 'MarkerSize', 12, 'LineWidth', 3);
+    end
     ylabel('执行时间 (s)', 'Color', 'r');
     
     xlabel('抽头长度 L');
-    title('抽头长度 vs EVM/时间');
+    title('抽头长度权衡: 精度 vs 速度');
     grid on;
+    xlim([0, max(tap_values)*1.1]);
     
     %% ========== 3. 分段长度与并行段数分析 ==========
     seg_study = data.seg_study;
@@ -110,44 +247,52 @@ function generate_cma_parameter_analysis()
     valid_seg = ~isnan(seg_study.evm_after);
     valid_par = ~isnan(par_study.evm_after);
     
-    % 3.1 分段长度分析
-    subplot(2, 3, 4);
-    yyaxis left;
+    % 3.1 分段长度-恒模误差趋势
+    subplot(3, 4, 9);
     semilogx(seg_values(valid_seg), seg_study.evm_after(valid_seg), 'b-o', 'LineWidth', 2, 'MarkerSize', 8);
-    ylabel('EVM (%)', 'Color', 'b');
-    ylim([45 46]);
-    
-    yyaxis right;
-    semilogx(seg_values(valid_seg), seg_study.exec_time(valid_seg), 'r-s', 'LineWidth', 2, 'MarkerSize', 8);
-    ylabel('执行时间 (s)', 'Color', 'r');
-    
     xlabel('分段长度 B');
-    title('分段长度 vs EVM/时间');
+    ylabel('恒模误差 (%)');
+    title('分段长度 vs 恒模误差');
     grid on;
-    set(gca, 'XTick', seg_values);
+    set(gca, 'XTick', seg_values(valid_seg));
     
-    % 3.2 并行段数分析
-    subplot(2, 3, 5);
+    % 3.2 分段长度-执行时间趋势
+    subplot(3, 4, 10);
+    semilogx(seg_values(valid_seg), seg_study.exec_time(valid_seg), 'r-s', 'LineWidth', 2, 'MarkerSize', 8);
+    xlabel('分段长度 B');
+    ylabel('执行时间 (s)');
+    title('分段长度 vs 执行时间');
+    grid on;
+    set(gca, 'XTick', seg_values(valid_seg));
+    
+    % 3.3 并行段数-恒模误差-收敛趋势
+    subplot(3, 4, 11);
     yyaxis left;
     semilogx(par_values(valid_par), par_study.evm_after(valid_par), 'b-o', 'LineWidth', 2, 'MarkerSize', 8);
-    ylabel('EVM (%)', 'Color', 'b');
+    ylabel('恒模误差 (%)', 'Color', 'b');
     
     yyaxis right;
     semilogx(par_values(valid_par), par_study.convergence_idx(valid_par)/1000, 'r-s', 'LineWidth', 2, 'MarkerSize', 8);
     ylabel('收敛点 (×10³)', 'Color', 'r');
     
     xlabel('并行段数 P');
-    title('并行段数 vs EVM/收敛');
+    title('并行段数 vs 恒模误差/收敛');
     grid on;
-    set(gca, 'XTick', par_values);
+    set(gca, 'XTick', par_values(valid_par));
     
-    % 3.3 抽头更新周期分析
-    subplot(2, 3, 6);
+    % 3.4 抽头更新周期分析
+    subplot(3, 4, 12);
     update_period = 32 * par_values(valid_par);
+    yyaxis left;
+    plot(update_period, par_study.evm_after(valid_par), 'b-o', 'LineWidth', 2, 'MarkerSize', 8);
+    ylabel('恒模误差 (%)', 'Color', 'b');
+    
+    yyaxis right;
     plot(update_period, par_study.convergence_idx(valid_par)/1000, 'g-^', 'LineWidth', 2, 'MarkerSize', 8);
+    ylabel('收敛点 (×10³)', 'Color', [0 0.6 0]);
+    
     xlabel('抽头更新周期 T=B×P (样本)');
-    ylabel('收敛点 (×10³)');
-    title('更新周期 vs 收敛速度');
+    title('更新周期 vs 性能指标');
     grid on;
     
     sgtitle('CMA均衡器参数性能分析', 'FontSize', 14, 'FontWeight', 'bold');
@@ -172,19 +317,19 @@ function generate_cma_parameter_analysis()
     fprintf('  其中 e(n) = R - |y(n)|² 是恒模误差\n\n');
     
     fprintf('■ 测试结果:\n');
-    fprintf('  ┌─────────┬──────────┬────────────┬────────────┐\n');
-    fprintf('  │  步长   │  EVM(%%)  │ 收敛点(k)  │ 稳态误差   │\n');
-    fprintf('  ├─────────┼──────────┼────────────┼────────────┤\n');
+    fprintf('  ┌─────────┬───────────┬────────────┬────────────┐\n');
+    fprintf('  │  步长   │ 恒模误差(%%)│ 收敛点(k)  │ 稳态误差   │\n');
+    fprintf('  ├─────────┼───────────┼────────────┼────────────┤\n');
     for i = 1:length(step_values)
         if valid_step(i)
-            fprintf('  │ %-7s │  %5.2f   │   %6.1f   │   %.4f   │\n', ...
+            fprintf('  │ %-7s │   %5.2f   │   %6.1f   │   %.4f   │\n', ...
                     step_labels{i}, step_study.evm_after(i), ...
                     step_study.convergence_idx(i)/1000, step_study.steady_state_err(i));
         else
-            fprintf('  │ %-7s │   NaN    │     发散   │     -      │\n', step_labels{i});
+            fprintf('  │ %-7s │    NaN    │     发散   │     -      │\n', step_labels{i});
         end
     end
-    fprintf('  └─────────┴──────────┴────────────┴────────────┘\n\n');
+    fprintf('  └─────────┴───────────┴────────────┴────────────┘\n\n');
     
     fprintf('■ 趋势成因分析:\n\n');
     fprintf('  1) 步长与收敛速度的关系:\n');
@@ -215,20 +360,20 @@ function generate_cma_parameter_analysis()
     fprintf('  对于28GBaud系统: L=33 → 覆盖约1.2ns时延扩展\n\n');
     
     fprintf('■ 测试结果:\n');
-    fprintf('  ┌──────────┬──────────┬────────────┬────────────┐\n');
-    fprintf('  │ 抽头长度 │  EVM(%%)  │ 执行时间(s)│  收敛点(k) │\n');
-    fprintf('  ├──────────┼──────────┼────────────┼────────────┤\n');
+    fprintf('  ┌──────────┬───────────┬────────────┬────────────┐\n');
+    fprintf('  │ 抽头长度 │恒模误差(%%)│ 执行时间(s)│  收敛点(k) │\n');
+    fprintf('  ├──────────┼───────────┼────────────┼────────────┤\n');
     for i = 1:length(tap_values)
         if valid_tap(i)
-            fprintf('  │    %3d   │  %5.2f   │   %6.3f   │   %6.1f   │\n', ...
+            fprintf('  │    %3d   │   %5.2f   │   %6.3f   │   %6.1f   │\n', ...
                     tap_values(i), tap_study.evm_after(i), ...
                     tap_study.exec_time(i), tap_study.convergence_idx(i)/1000);
         else
-            fprintf('  │    %3d   │   NaN    │   %6.3f   │    发散    │\n', ...
+            fprintf('  │    %3d   │    NaN    │   %6.3f   │    发散    │\n', ...
                     tap_values(i), tap_study.exec_time(i));
         end
     end
-    fprintf('  └──────────┴──────────┴────────────┴────────────┘\n\n');
+    fprintf('  └──────────┴───────────┴────────────┴────────────┘\n\n');
     
     fprintf('■ 趋势成因分析:\n\n');
     fprintf('  1) 抽头过短(L=9)时EVM略高:\n');
@@ -262,32 +407,32 @@ function generate_cma_parameter_analysis()
     fprintf('■ 关键关系: 抽头更新周期 T = B × P (样本)\n\n');
     
     fprintf('■ 分段长度测试结果:\n');
-    fprintf('  ┌──────────┬──────────┬────────────┬──────────────┐\n');
-    fprintf('  │ 分段长度 │  EVM(%%)  │ 执行时间(s)│ 更新周期(B×4)│\n');
-    fprintf('  ├──────────┼──────────┼────────────┼──────────────┤\n');
+    fprintf('  ┌──────────┬───────────┬────────────┬──────────────┐\n');
+    fprintf('  │ 分段长度 │恒模误差(%%)│ 执行时间(s)│ 更新周期(B×4)│\n');
+    fprintf('  ├──────────┼───────────┼────────────┼──────────────┤\n');
     for i = 1:length(seg_values)
         if valid_seg(i)
-            fprintf('  │    %3d   │  %5.2f   │   %6.3f   │     %4d     │\n', ...
+            fprintf('  │    %3d   │   %5.2f   │   %6.3f   │     %4d     │\n', ...
                     seg_values(i), seg_study.evm_after(i), ...
                     seg_study.exec_time(i), seg_values(i)*4);
         else
-            fprintf('  │    %3d   │   NaN    │   %6.3f   │     %4d     │\n', ...
+            fprintf('  │    %3d   │    NaN    │   %6.3f   │     %4d     │\n', ...
                     seg_values(i), seg_study.exec_time(i), seg_values(i)*4);
         end
     end
     fprintf('  └──────────┴──────────┴────────────┴──────────────┘\n\n');
     
     fprintf('■ 并行段数测试结果:\n');
-    fprintf('  ┌──────────┬──────────┬────────────┬───────────────┐\n');
-    fprintf('  │ 并行段数 │  EVM(%%)  │ 收敛点(k)  │ 更新周期(32×P)│\n');
-    fprintf('  ├──────────┼──────────┼────────────┼───────────────┤\n');
+    fprintf('  ┌──────────┬───────────┬────────────┬───────────────┐\n');
+    fprintf('  │ 并行段数 │恒模误差(%%)│ 收敛点(k)  │ 更新周期(32×P)│\n');
+    fprintf('  ├──────────┼───────────┼────────────┼───────────────┤\n');
     for i = 1:length(par_values)
         if valid_par(i)
-            fprintf('  │    %2d    │  %5.2f   │   %6.1f   │      %4d     │\n', ...
+            fprintf('  │    %2d    │   %5.2f   │   %6.1f   │      %4d     │\n', ...
                     par_values(i), par_study.evm_after(i), ...
                     par_study.convergence_idx(i)/1000, 32*par_values(i));
         else
-            fprintf('  │    %2d    │   NaN    │    发散    │      %4d     │\n', ...
+            fprintf('  │    %2d    │    NaN    │    发散    │      %4d     │\n', ...
                     par_values(i), 32*par_values(i));
         end
     end

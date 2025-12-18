@@ -17,8 +17,8 @@ if numel(st) == 1
     clc;
     clear;
     close all;
-    enable_vv_phase_lock = true;
-    enable_plot_output = true;
+    enable_vv_phase_lock = false;
+    enable_plot_output = false;
 end
 
 % 确保配置变量存在
@@ -47,8 +47,8 @@ SigX_in = RTdataX(:);
 SigY_in = RTdataY(:);
 
 figure();
-subplot(121);plot(RTdataX,'.r');title('Xpol before CMA');xlim([-2 2]);ylim([-2 2]);
-subplot(122);plot(RTdataY,'.b');title('Ypol before CMA');xlim([-2 2]);ylim([-2 2]);
+subplot(121);plot(RTdataX,'.r');title('Xpol before CMA homework');xlim([-2 2]);ylim([-2 2]);
+subplot(122);plot(RTdataY,'.b');title('Ypol before CMA homework');xlim([-2 2]);ylim([-2 2]);
 
 %% CMA参数设置 (与时域版本保持一致)
 seg_len     = 32;   % 每段处理样本数
@@ -104,10 +104,10 @@ yy_accu = zeros(tap_len, 1);
 xy_accu = zeros(tap_len, 1);
 yx_accu = zeros(tap_len, 1);
 
-%% 频域卷积参数准备
-block_input_len = seg_len + tap_len - 1;    % 每段输入包含前导样本后的长度
-conv_len = block_input_len + tap_len - 1;   % 卷积结果长度
-nfft_conv = 2^nextpow2(conv_len);           % FFT长度，取大于等于conv_len的最小2的幂次
+%% 频域卷积参数准备 (重叠保留法 Overlap-Save)
+block_input_len = seg_len + tap_len - 1;    % 每段输入包含前导样本后的长度 = 64
+% 重叠保留法: FFT长度只需 >= block_input_len，循环卷积后丢弃前M-1个无效样本
+nfft_conv = 2^nextpow2(block_input_len);    % FFT长度 = 64 (已是2的幂次，比原128减半)
 
 % 零填充数组，作为FFT/IFFT的输入容器
 pad_input_x = zeros(nfft_conv, 1);  % 输入信号零填充
@@ -260,8 +260,8 @@ erry_reshaped = reshape(erry_vec, seg_len, seg_num);
 
 %% 均衡后星座图
 figure();
-subplot(121);plot(CMAdataX,'.r');title('Xpol after CMA');xlim([-2 2]);ylim([-2 2]);
-subplot(122);plot(CMAdataY,'.b');title('Ypol after CMA');xlim([-2 2]);ylim([-2 2]);
+subplot(121);plot(CMAdataX,'.r');title('Xpol after CMA homework');xlim([-2 2]);ylim([-2 2]);
+subplot(122);plot(CMAdataY,'.b');title('Ypol after CMA homework');xlim([-2 2]);ylim([-2 2]);
 
 %% 相位漂移估计图 (由 enable_plot_output 控制)
 if enable_plot_output
@@ -275,5 +275,5 @@ CMAdataX_tail = CMAdataX(end-131072:end);
 CMAdataY_tail = CMAdataY(end-131072:end);
 
 figure();
-subplot(121);plot(CMAdataX_tail,'.r');title('Last part of Xpol after CMA');xlim([-2 2]);ylim([-2 2]);
-subplot(122);plot(CMAdataY_tail,'.b');title('Last part of Ypol after CMA');xlim([-2 2]);ylim([-2 2]);
+subplot(121);plot(CMAdataX_tail,'.r');title('Last part of Xpol after CMA homework');xlim([-2 2]);ylim([-2 2]);
+subplot(122);plot(CMAdataY_tail,'.b');title('Last part of Ypol after CMA homework');xlim([-2 2]);ylim([-2 2]);

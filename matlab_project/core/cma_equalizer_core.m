@@ -24,8 +24,8 @@
 %       .errx_vec   - X极化误差向量
 %       .erry_vec   - Y极化误差向量
 %       .taps       - 最终抽头 (xx, yy, xy, yx)
-%       .evm_before - 均衡前EVM
-%       .evm_after  - 均衡后EVM
+%       .evm_before - 均衡前恒模误差 (%)
+%       .evm_after  - 均衡后恒模误差 (%)
 %       .convergence_idx - 收敛点索引
 %       .exec_time  - 执行时间
 %
@@ -110,10 +110,10 @@ function result = cma_equalizer_core(SigX_in, SigY_in, params)
     xy_accu = zeros(tap_len, 1);
     yx_accu = zeros(tap_len, 1);
     
-    %% 频域卷积参数准备
+    %% 频域卷积参数准备 (重叠保留法 Overlap-Save)
     block_input_len = seg_len + tap_len - 1;
-    conv_len = block_input_len + tap_len - 1;
-    nfft_conv = 2^nextpow2(conv_len);
+    % 重叠保留法: FFT长度只需 >= block_input_len，循环卷积后丢弃前M-1个无效样本
+    nfft_conv = 2^nextpow2(block_input_len);
     
     % 零填充数组
     pad_input_x = zeros(nfft_conv, 1);
@@ -233,16 +233,42 @@ function result = cma_equalizer_core(SigX_in, SigY_in, params)
     
     exec_time = toc;
     
-    %% 计算均衡后EVM
-    evm_after = calculate_evm_internal(SigX_out, constellation);
+    %% 检测发散情况
+    is_diverged = any(isnan(SigX_out)) || any(isinf(SigX_out)) || ...
+                  any(isnan(SigY_out)) || any(isinf(SigY_out));
+    
+    % 额外检测：输出幅度异常大（超过输入的10倍）也视为发散
+    if ~is_diverged
+        max_input_mag = max(abs([SigX_in; SigY_in]));
+        max_output_mag = max(abs([SigX_out; SigY_out]));
+        if max_output_mag > 10 * max_input_mag
+            is_diverged = true;
+        end
+    end
+    
+    % 检测稳态误差是否过大（恒模误差应该趋近于0，如果稳态误差>1说明未收敛）
+    err_smooth = movmean(abs(errx_vec), 1000);
+    steady_state_err = mean(err_smooth(max(1,end-10000):end));
+    if steady_state_err > 1.5 || isnan(steady_state_err)
+        is_diverged = true;
+    end
+    
+    %% 计算均衡后恒模误差
+    if is_diverged
+        evm_after = NaN;
+    else
+        evm_after = calculate_evm_internal(SigX_out, constellation);
+    end
     
     %% 计算收敛点 (误差降到稳态的10%以内)
-    err_smooth = movmean(abs(errx_vec), 1000);
-    steady_state_err = mean(err_smooth(end-10000:end));
-    convergence_threshold = steady_state_err * 1.1;
-    convergence_idx = find(err_smooth < convergence_threshold, 1, 'first');
-    if isempty(convergence_idx)
-        convergence_idx = total_len;
+    if is_diverged
+        convergence_idx = NaN;
+    else
+        convergence_threshold = steady_state_err * 1.1;
+        convergence_idx = find(err_smooth < convergence_threshold, 1, 'first');
+        if isempty(convergence_idx)
+            convergence_idx = total_len;
+        end
     end
     
     %% 构建输出结构体
@@ -261,18 +287,22 @@ function result = cma_equalizer_core(SigX_in, SigY_in, params)
     result.exec_time = exec_time;
     result.total_len = total_len;
     result.params = params;
+    result.is_diverged = is_diverged;
+    result.steady_state_err = steady_state_err;
     
 end
 
-%% 内部EVM计算函数
-function evm = calculate_evm_internal(signal, constellation)
+%% 内部恒模误差计算函数 (CMA Modulus Error)
+%  计算信号模长与目标模长的偏差，用于评估CMA恒模均衡性能
+function cma_err = calculate_evm_internal(signal, ~)
     signal = signal(:);
-    % 判决到最近星座点
-    distances = abs(signal - constellation);
-    [~, idx] = min(distances, [], 2);
-    decided = constellation(idx).';
+    % CMA目标模长 (对应 Rx=2, 即 |s|^2 = 2)
+    target_modulus = sqrt(2);
     
-    % 计算EVM
-    error = signal - decided;
-    evm = sqrt(mean(abs(error).^2)) / sqrt(mean(abs(constellation).^2)) * 100;
+    % 计算模长误差: 实际模长与目标模长的偏差
+    modulus = abs(signal);
+    modulus_error = modulus - target_modulus;
+    
+    % 恒模误差百分比: RMS(模长偏差) / 目标模长 * 100%
+    cma_err = sqrt(mean(modulus_error.^2)) / target_modulus * 100;
 end

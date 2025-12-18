@@ -77,11 +77,16 @@ function report_data = generate_cma_comparison_report(config)
     
     cd(hwDir);
     
+    % 预设配置变量，防止 CMA_homework.m 的默认配置影响后续运行
+    enable_vv_phase_lock = false;
+    enable_plot_output = false;
+    
     % 时间测量
     time_ref = zeros(config.num_timing_runs, 1);
     for run_idx = 1:config.num_timing_runs
-        % 清除工作区变量（保留必要变量）
-        clearvars -except config report_data hwDir coreDir originalDir scriptDir time_ref run_idx dataFile
+        % 清除工作区变量（保留必要变量和配置开关）
+        clearvars -except config report_data hwDir coreDir originalDir scriptDir time_ref run_idx dataFile ...
+                  enable_vv_phase_lock enable_plot_output
         
         tic;
         
@@ -95,8 +100,9 @@ function report_data = generate_cma_comparison_report(config)
     % 保存时域结果
     ref_SigX_out = SigX_out;
     ref_SigY_out = SigY_out;
-    ref_CMAdataX = CMAdataX;
-    ref_CMAdataY = CMAdataY;
+    % 注意: CMA_reference.m 会覆盖 CMAdataX/Y 为尾部数据，因此从 SigX_out 重新生成完整数据
+    ref_CMAdataX = SigX_out.';
+    ref_CMAdataY = SigY_out.';
     ref_errx_vec = errx_vec;
     ref_erry_vec = erry_vec;
     ref_xx = xx;
@@ -116,9 +122,10 @@ function report_data = generate_cma_comparison_report(config)
         clearvars -except config report_data hwDir coreDir originalDir scriptDir ...
                   time_ref time_hw run_idx dataFile ...
                   ref_SigX_out ref_SigY_out ref_CMAdataX ref_CMAdataY ...
-                  ref_errx_vec ref_erry_vec ref_xx ref_yy ref_xy ref_yx
+                  ref_errx_vec ref_erry_vec ref_xx ref_yy ref_xy ref_yx ...
+                  enable_vv_phase_lock enable_plot_output
         
-        % 配置开关
+        % 配置开关 (必须在clearvars之后、run之前设置，确保CMA_homework.m使用正确的配置)
         enable_vv_phase_lock = false;  % 关闭相位校正以公平比较
         enable_plot_output = false;
         
@@ -134,8 +141,9 @@ function report_data = generate_cma_comparison_report(config)
     % 保存频域结果
     hw_SigX_out = SigX_out;
     hw_SigY_out = SigY_out;
-    hw_CMAdataX = CMAdataX;
-    hw_CMAdataY = CMAdataY;
+    % 保持与时域结果一致的数据来源
+    hw_CMAdataX = SigX_out.';
+    hw_CMAdataY = SigY_out.';
     hw_errx_vec = errx_vec;
     hw_erry_vec = erry_vec;
     hw_xx = xx;
